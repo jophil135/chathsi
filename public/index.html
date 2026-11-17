@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#07152d">
+  <title>CHATHSI — Connect. Express. Belong.</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="toast" class="toast"></div>
+  <div id="authView" class="auth-shell">
+    <div class="auth-brand">
+      <div class="brand-mark">C</div>
+      <div><div class="brand-name">CHATHSI</div><div class="brand-tag">CONNECT. EXPRESS. BELONG.</div></div>
+    </div>
+    <div class="auth-card">
+      <div class="auth-tabs"><button class="active" data-auth="login">Log in</button><button data-auth="register">Create account</button></div>
+      <form id="loginForm" class="auth-form">
+        <h1>Welcome back.</h1><p>Your people are one click away.</p>
+        <label>Email<input name="email" type="email" required placeholder="you@example.com"></label>
+        <label>Password<input name="password" type="password" required placeholder="Your password"></label>
+        <button class="btn primary full">Log in <span>→</span></button>
+      </form>
+      <form id="registerForm" class="auth-form hidden">
+        <h1>Find your people.</h1><p>Create your CHATHSI account.</p>
+        <label>Display name<input name="displayName" required maxlength="50" placeholder="Your name"></label>
+        <label>Username<input name="username" required minlength="3" maxlength="24" pattern="[A-Za-z0-9_]+" placeholder="your_username"></label>
+        <label>Email<input name="email" type="email" required placeholder="you@example.com"></label>
+        <label>Password<input name="password" type="password" required minlength="10" placeholder="At least 10 characters"></label>
+        <button class="btn primary full">Create account <span>→</span></button>
+      </form>
+      <div class="auth-note">By continuing, you agree to use CHATHSI respectfully and follow community rules.</div>
+    </div>
+    <div class="auth-footer">A place for every voice.</div>
+  </div>
+
+  <div id="appView" class="app hidden">
+    <aside class="sidebar">
+      <a class="brand" href="#"><span class="brand-mark">C</span><span>CHATHSI</span></a>
+      <div class="side-label">MENU</div>
+      <button class="nav-item active" data-page="feed"><span>⌂</span> Home</button>
+      <button class="nav-item" data-page="explore"><span>⌕</span> Explore</button>
+      <button class="nav-item" data-page="messages"><span>▤</span> Messages</button>
+      <button class="nav-item" data-page="notifications"><span>♧</span> Notifications</button>
+      <button class="nav-item" data-page="wallet"><span>◈</span> Wallet & gifts</button>
+      <button class="nav-item" data-page="profile"><span>◎</span> My profile</button>
+      <div class="side-spacer"></div>
+      <div class="premium-mini"><div class="premium-crown">✦</div><b>Go premium</b><p>Stand out with CHATHSI Plus and Pro.</p><button class="btn premium-btn" data-page="premium">Explore plans</button></div>
+      <button id="adminNav" class="nav-item hidden" data-page="admin"><span>⚙</span> Admin panel</button>
+      <button id="logoutBtn" class="nav-item logout"><span>↪</span> Log out</button>
+      <div class="sidebar-foot">BUILT BY JOSSY STUDIOS</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="mobile-brand"><span class="brand-mark">C</span> CHATHSI</div>
+        <div class="search-wrap"><span>⌕</span><input id="globalSearch" placeholder="Search people on CHATHSI"></div>
+        <div class="top-actions"><button class="icon-btn" data-page="notifications" title="Notifications">♧</button><div id="meMini" class="me-mini"></div></div>
+      </header>
+      <div class="mobile-nav">
+        <button data-page="feed">⌂<small>Home</small></button><button data-page="explore">⌕<small>Explore</small></button><button data-page="messages">▤<small>Chats</small></button><button data-page="wallet">◈<small>Wallet</small></button><button data-page="profile">◎<small>Profile</small></button>
+      </div>
+      <div id="page" class="page"></div>
+      <footer class="page-footer">CHATHSI © <span id="year"></span> · BUILT BY JOSSY STUDIOS</footer>
+    </main>
+    <aside class="rightbar">
+      <div class="right-card">
+        <div class="section-head"><b>Who to follow</b><button class="text-btn" data-page="explore">See all</button></div>
+        <div id="suggestions" class="suggestions"><div class="muted">Discover people to connect with.</div></div>
+      </div>
+      <div class="right-card blue-card"><div class="blue-orb">✦</div><b>Make your space yours.</b><p>Unlock profile styles and creator tools with CHATHSI Premium.</p><button class="btn light-btn" data-page="premium">View membership</button></div>
+      <div class="right-legal">Community guidelines · Privacy · Terms<br>Be kind. Keep it real.</div>
+    </aside>
+  </div>
+  <div id="modal" class="modal hidden"><div class="modal-backdrop" data-close></div><div class="modal-box"><button class="modal-close" data-close>×</button><div id="modalContent"></div></div></div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
