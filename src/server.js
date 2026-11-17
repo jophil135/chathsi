@@ -3,7 +3,6 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const fs = require('fs');
-const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cookieParser = require('cookie-parser');
@@ -21,7 +20,9 @@ const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('JWT_SECRET is required. Copy .env.example to .env and set it.');
 const uploadDir = path.resolve(process.env.UPLOAD_DIR || 'uploads');
+const voiceDir = path.resolve(process.env.VOICE_DIR || path.join(uploadDir, '..', 'voice-private'));
 fs.mkdirSync(uploadDir, { recursive: true });
+fs.mkdirSync(voiceDir, { recursive: true });
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(morgan('tiny'));
@@ -41,6 +42,18 @@ const upload = multer({
   limits: { fileSize: (Number(process.env.MAX_UPLOAD_MB) || 8) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (!/^image\/(jpeg|png|gif|webp)$/.test(file.mimetype)) return cb(new Error('Only JPG, PNG, GIF and WEBP images are accepted.'));
+    cb(null, true);
+  }
+});
+const voiceStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, voiceDir),
+  filename: (_req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${path.extname(file.originalname).toLowerCase() || '.webm'}`)
+});
+const voiceUpload = multer({
+  storage: voiceStorage,
+  limits: { fileSize: (Number(process.env.MAX_VOICE_MB) || 12) * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (!/^audio\/(webm|ogg|mpeg|mp4|wav|aac|mp4|3gpp)/.test(file.mimetype)) return cb(new Error('Unsupported audio format.'));
     cb(null, true);
   }
 });
@@ -107,11 +120,20 @@ async function seed() {
 }
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'CHATHSI API' }));
+app.get('/api/voice/:filename', auth, async (req, res) => {
+  const filename = path.basename(req.params.filename);
+  const audioUrl = `/api/voice/${filename}`;
+  const message = await M.Message.findOne({ audioUrl, $or: [{ sender: req.user._id }, { recipient: req.user._id }] });
+  if (!message) return res.status(404).json({ error: 'Voice message not found.' });
+  return res.sendFile(path.join(voiceDir, filename));
+});
 app.get('/api/config', async (_req, res) => {
   const methods = await M.Setting.findOne({ key: 'paymentMethods' }).lean();
   const plans = await M.Setting.findOne({ key: 'premiumPlans' }).lean();
   const platform = await M.Setting.findOne({ key: 'platform' }).lean();
-  res.json({ paymentMethods: methods?.value || {}, premiumPlans: plans?.value || [], platform: platform?.value || {} });
+  const iceServers = [{ urls: process.env.STUN_URL || 'stun:stun.l.google.com:19302' }];
+  if (process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) iceServers.push({ urls: process.env.TURN_URL, username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL });
+  res.json({ paymentMethods: methods?.value || {}, premiumPlans: plans?.value || [], platform: platform?.value || {}, rtc: { iceServers } });
 });
 
 // Authentication
@@ -253,6 +275,19 @@ app.post('/api/messages/:userId', auth, async (req, res) => {
   await notify(recipient._id, req.user._id, 'message', `New message from ${req.user.username}.`);
   res.status(201).json({ message });
 });
+app.post('/api/messages/:userId/voice', auth, voiceUpload.single('audio'), async (req, res) => {
+  const recipient = await M.User.findById(req.params.userId);
+  if (!recipient || recipient.isSuspended) return res.status(404).json({ error: 'Recipient not found.' });
+  if (String(recipient._id) === String(req.user._id)) return res.status(400).json({ error: 'You cannot send a voice message to yourself.' });
+  if (!req.file) return res.status(400).json({ error: 'Choose a voice recording first.' });
+  if (req.user.blockedUsers.some(id => String(id) === String(recipient._id)) || recipient.blockedUsers.some(id => String(id) === String(req.user._id))) return res.status(403).json({ error: 'Messaging is unavailable.' });
+  const duration = Math.max(0, Math.min(600, Number(req.body.duration) || 0));
+  const message = await M.Message.create({ conversationKey: convoKey(req.user._id, recipient._id), sender: req.user._id, recipient: recipient._id, text: '', audioUrl: `/api/voice/${req.file.filename}`, audioMime: req.file.mimetype, audioDuration: duration });
+  await message.populate('sender', 'username avatar');
+  io.to(`user:${recipient._id}`).emit('message', message);
+  await notify(recipient._id, req.user._id, 'message', `Voice message from ${req.user.username}.`);
+  res.status(201).json({ message });
+});
 
 // Notifications
 app.get('/api/notifications', auth, async (req, res) => {
@@ -290,28 +325,20 @@ app.post('/api/wallet/topups', auth, async (req, res) => {
   res.status(201).json({ topup, message: 'Request submitted for administrator review. Your wallet has not been credited yet.' });
 });
 app.post('/api/wallet/buy-gift', auth, async (req, res) => {
-  const gift = await M.Gift.findOne({ _id: req.body.giftId, active: true });
   const quantity = Math.max(1, Math.min(20, Math.floor(Number(req.body.quantity) || 1)));
-  if (!gift) return res.status(404).json({ error: 'Gift not found.' });
-  const total = gift.value * quantity;
-  if (req.user.walletBalance < total) return res.status(400).json({ error: 'Insufficient CHATHSI credits. Top up your wallet first.' });
-  req.user.walletBalance -= total;
-  await req.user.save();
-  const items = await M.GiftItem.create(Array.from({ length: quantity }, () => ({ owner: req.user._id, gift: gift._id, originalValue: gift.value, acquiredFrom: 'purchase' })));
-  await M.Ledger.create({ user: req.user._id, type: 'gift_purchase', amount: -total, balanceAfter: req.user.walletBalance, reference: makeRef('GIFTBUY'), description: `Purchased ${quantity} × ${gift.name}` });
-  res.status(201).json({ items, balance: req.user.walletBalance });
+  const result = M.atomicPurchaseGift(req.user._id, req.body.giftId, quantity);
+  if (result.error) return res.status(400).json({ error: result.error });
+  res.status(201).json({ items: result.items, balance: result.user.walletBalance });
 });
 app.post('/api/wallet/gift-transfer', auth, async (req, res) => {
   const recipient = await M.User.findOne({ username: String(req.body.username || '').trim() });
   if (!recipient || String(recipient._id) === String(req.user._id)) return res.status(404).json({ error: 'Enter a valid recipient username.' });
   if (req.user.blockedUsers.some(id => String(id) === String(recipient._id)) || recipient.blockedUsers.some(id => String(id) === String(req.user._id)))
     return res.status(403).json({ error: 'This transfer is unavailable.' });
-  const item = await M.GiftItem.findOne({ _id: req.body.giftItemId, owner: req.user._id, status: 'available' }).populate('gift');
-  if (!item) return res.status(404).json({ error: 'Available gift not found.' });
-  item.status = 'pending'; await item.save();
-  const transfer = await M.GiftTransfer.create({ sender: req.user._id, recipient: recipient._id, giftItem: item._id, value: item.originalValue });
+  const result = M.atomicCreateGiftTransfer(req.user._id, recipient._id, req.body.giftItemId);
+  if (result.error) return res.status(409).json({ error: result.error });
   await notify(recipient._id, req.user._id, 'gift_pending', `${req.user.username} requested to send you a gift. It is awaiting admin approval.`);
-  res.status(201).json({ transfer, message: 'Gift transfer submitted for admin approval.' });
+  res.status(201).json({ transfer: result.transfer, message: 'Gift transfer submitted for admin approval.' });
 });
 
 // Admin
@@ -340,16 +367,10 @@ app.get('/api/admin/topups', auth, admin, async (_req, res) => res.json({ topups
 app.post('/api/admin/topups/:id/review', auth, admin, async (req, res) => {
   const status = req.body.status;
   if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ error: 'Choose approve or reject.' });
+  const result = M.atomicReviewTopup(req.params.id, req.user._id, status, req.body.note);
+  if (result.error) return res.status(409).json({ error: result.error });
   const topup = await M.Topup.findById(req.params.id);
-  if (!topup || topup.status !== 'pending') return res.status(409).json({ error: 'Top-up is not pending.' });
-  if (status === 'approved') {
-    const user = await M.User.findById(topup.user);
-    if (!user) return res.status(404).json({ error: 'Top-up user no longer exists.' });
-    user.walletBalance += topup.amount; await user.save();
-    await M.Ledger.create({ user: user._id, type: 'topup', amount: topup.amount, balanceAfter: user.walletBalance, reference: topup.reference, description: `Approved ${topup.method} top-up`, actor: req.user._id });
-    await notify(user._id, req.user._id, 'topup_approved', `Your ₦${topup.amount.toLocaleString()} top-up was approved.`);
-  }
-  topup.status = status; topup.adminNote = String(req.body.note || '').slice(0, 500); topup.reviewedBy = req.user._id; topup.reviewedAt = new Date(); await topup.save();
+  if (status === 'approved') await notify(result.user, req.user._id, 'topup_approved', `Your ₦${topup.amount.toLocaleString()} top-up was approved.`);
   await audit(req.user._id, `topup_${status}`, 'topup', topup._id, topup.adminNote);
   res.json({ topup });
 });
@@ -357,23 +378,11 @@ app.get('/api/admin/transfers', auth, admin, async (_req, res) => res.json({ tra
 app.post('/api/admin/transfers/:id/review', auth, admin, async (req, res) => {
   const status = req.body.status;
   if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ error: 'Choose approve or reject.' });
+  const result = M.atomicReviewGiftTransfer(req.params.id, req.user._id, status, req.body.note);
+  if (result.error) return res.status(409).json({ error: result.error });
   const transfer = await M.GiftTransfer.findById(req.params.id);
-  if (!transfer || transfer.status !== 'pending') return res.status(409).json({ error: 'Transfer is not pending.' });
-  const item = await M.GiftItem.findById(transfer.giftItem);
-  if (!item || item.status !== 'pending' || String(item.owner) !== String(transfer.sender)) return res.status(409).json({ error: 'Gift item is no longer eligible.' });
-  if (status === 'approved') {
-    const recipient = await M.User.findById(transfer.recipient);
-    if (!recipient) return res.status(404).json({ error: 'Recipient no longer exists.' });
-    item.status = 'transferred'; await item.save();
-    // The gift is consumed (not re-transferable); full face value is credited as internal CHATHSI credits exactly once.
-    recipient.walletBalance += transfer.value; await recipient.save();
-    await M.Ledger.create({ user: recipient._id, type: 'gift_received', amount: transfer.value, balanceAfter: recipient.walletBalance, reference: `TRANSFER_${transfer._id}`, description: 'Gift transfer value credited (100%)', actor: req.user._id });
-    await notify(recipient._id, req.user._id, 'gift_received', `Your gift transfer was approved. ₦${transfer.value.toLocaleString()} CHATHSI credits were added.`);
-  } else {
-    item.status = 'available'; await item.save();
-    await notify(transfer.sender, req.user._id, 'gift_rejected', 'Your gift transfer was declined. The gift is available in your inventory again.');
-  }
-  transfer.status = status; transfer.adminNote = String(req.body.note || '').slice(0, 500); transfer.reviewedBy = req.user._id; transfer.reviewedAt = new Date(); await transfer.save();
+  if (status === 'approved') await notify(result.recipient, req.user._id, 'gift_received', `Your gift transfer was approved. ₦${Number(result.value).toLocaleString()} CHATHSI credits were added.`);
+  else await notify(result.sender, req.user._id, 'gift_rejected', 'Your gift transfer was declined. The gift is available in your inventory again.');
   await audit(req.user._id, `gift_transfer_${status}`, 'gift_transfer', transfer._id, transfer.adminNote);
   res.json({ transfer });
 });
@@ -462,6 +471,19 @@ io.on('connection', socket => {
   socket.on('typing', ({ recipientId, active }) => {
     if (recipientId) io.to(`user:${recipientId}`).emit('typing', { userId: socket.userId, active: !!active });
   });
+  const relayCallSignal = async (event, payload = {}) => {
+    const recipientId = String(payload.recipientId || '');
+    if (!recipientId || recipientId === socket.userId || recipientId.length > 80) return;
+    const recipient = await M.User.findById(recipientId);
+    const caller = await M.User.findById(socket.userId);
+    if (!recipient || !caller || recipient.isSuspended || caller.isSuspended) return;
+    if (caller.blockedUsers.some(id => String(id) === recipientId) || recipient.blockedUsers.some(id => String(id) === socket.userId)) return;
+    const safePayload = { ...payload, recipientId: undefined, from: socket.userId };
+    io.to(`user:${recipientId}`).emit(event, safePayload);
+  };
+  ['call:invite','call:accept','call:reject','call:end','call:offer','call:answer','call:ice'].forEach(event => {
+    socket.on(event, payload => { relayCallSignal(event, payload).catch(err => console.error('Call signalling error:', err.message)); });
+  });
 });
 
 app.use((err, _req, res, _next) => {
@@ -471,6 +493,7 @@ app.use((err, _req, res, _next) => {
 });
 app.get('*', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
 
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/chathsi')
-  .then(async () => { await seed(); server.listen(PORT, () => console.log(`CHATHSI running on ${PORT}`)); })
-  .catch(err => { console.error('MongoDB connection failed:', err.message); process.exit(1); });
+(async () => {
+  try { await seed(); server.listen(PORT, () => console.log(`CHATHSI running on ${PORT} using SQLite at ${process.env.DATABASE_PATH || 'data/chathsi.db'}`)); }
+  catch (err) { console.error('CHATHSI startup failed:', err); process.exit(1); }
+})();
