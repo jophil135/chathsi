@@ -2,28 +2,26 @@ services:
   - type: web
     name: chathsi
     runtime: node
-    plan: starter
+    plan: free
     buildCommand: npm install
     startCommand: npm start
-    disk:
-      name: chathsi-data
-      mountPath: /var/data/chathsi
-      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
       - key: DATABASE_PATH
-        value: /var/data/chathsi/chathsi.db
+        value: /tmp/chathsi.db
       - key: UPLOAD_DIR
-        value: /var/data/chathsi/uploads
+        value: /tmp/chathsi-uploads
       - key: VOICE_DIR
-        value: /var/data/chathsi/voice-private
+        value: /tmp/chathsi-voice
       - key: MAX_VOICE_MB
         value: "10"
       - key: COOKIE_SECURE
         value: "true"
-      - key: MAX_UPLOAD_MB
+      - key: MAX_IMAGE_MB
         value: "8"
+      - key: MAX_MEDIA_MB
+        value: "50"
       - key: JWT_SECRET
         generateValue: true
       - key: ADMIN_EMAIL

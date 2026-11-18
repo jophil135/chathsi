@@ -32,18 +32,21 @@ const refs = {
   giftTransfers: { sender:'users', recipient:'users', giftItem:'giftItems', reviewedBy:'users' },
   posts: { author:'users', 'comments.author':'users' },
   messages: { sender:'users', recipient:'users' },
+  friendRequests: { sender:'users', recipient:'users' },
+  groupMessages: { sender:'users', group:'groups' },
+  groups: { owner:'users', members:'users', admins:'users' },
   notifications: { user:'users', actor:'users' },
   stories: { author:'users', viewers:'users' },
   topups: { user:'users', reviewedBy:'users' },
   ledgers: { user:'users', actor:'users' },
   reports: { reporter:'users' },
-  audits: { admin:'users' }
+  audits: { admin:'users' }, adverts: { advertiser:'users', reviewedBy:'users' }
 };
 const defaults = {
  users:{displayName:'',bio:'',avatar:'',role:'user',premium:'free',premiumUntil:null,walletBalance:0,followers:[],following:[],blockedUsers:[],isSuspended:false,lastSeen:now()},
- posts:{text:'',mediaUrl:'',likes:[],comments:[],isRemoved:false}, messages:{readAt:null}, notifications:{readAt:null,link:''},
+ posts:{text:'',mediaUrl:'',likes:[],comments:[],isRemoved:false}, messages:{readAt:null}, groupMessages:{text:'',mediaUrl:'',mediaType:'',audioUrl:'',audioDuration:0}, groups:{description:'',avatar:'',members:[],admins:[],lastMessageAt:null}, notifications:{readAt:null,link:''},
  gifts:{description:'',emoji:'🎁',active:true}, giftItems:{status:'available',acquiredFrom:'purchase'}, topups:{proofUrl:'',status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null},
- giftTransfers:{status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null}, ledgers:{}, reports:{status:'open'}, stories:{text:'',mediaUrl:'',viewers:[]}, settings:{}, audits:{targetType:'',targetId:'',details:''}
+ giftTransfers:{status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null}, ledgers:{}, reports:{status:'open'}, stories:{text:'',mediaUrl:'',viewers:[]}, settings:{}, adverts:{status:'pending',paymentStatus:'pending',impressions:0,clicks:0,adminNote:'',mediaUrl:'',placement:'feed'}, audits:{targetType:'',targetId:'',details:''}
 };
 function getPath(obj, key) { const parts=key.split('.'); const walk=(value,i)=>{ if(value==null)return undefined; if(i===parts.length)return value; if(Array.isArray(value))return value.map(v=>walk(v,i)).flat(); return walk(value[parts[i]],i+1); }; return walk(obj,0); }
 function setPath(obj,key,value){const parts=key.split('.');const walk=(target,i)=>{if(i===parts.length-1){target[parts[i]]=value;return;}if(Array.isArray(target)){target.forEach(x=>walk(x,i));return;}if(!target[parts[i]])return;walk(target[parts[i]],i+1);};walk(obj,0);}
@@ -138,12 +141,13 @@ class Model {
  _create(input){const t=now(),data={...(defaults[this.collection]||{}),...clone(input),_id:input._id||id(),createdAt:input.createdAt||t,updatedAt:t};if(this.collection==='users'){data.username=String(data.username||'').trim();data.email=String(data.email||'').trim().toLowerCase();if(!input.lastSeen)data.lastSeen=t;}if(data.createdAt instanceof Date)data.createdAt=data.createdAt.toISOString();if(data.updatedAt instanceof Date)data.updatedAt=data.updatedAt.toISOString();const doc=attachArrayMethods(new Doc(this,data));this._save(doc);return doc;}
  find(filter={}){return new Query(this,'many',filter);} findOne(filter={}){return new Query(this,'one',filter);} findById(id){return new Query(this,'one',{_id:String(id)});}
  async countDocuments(filter={}){return this._all().filter(d=>matches(d,filter)).length;}
+ async deleteMany(filter={}){const rows=this._all().filter(d=>matches(d,filter));const stmt=db.prepare('DELETE FROM documents WHERE collection=? AND id=?');for(const d of rows)stmt.run(this.collection,String(d._id));return {deletedCount:rows.length};}
  async updateMany(filter, update){const docs=this._all().filter(d=>matches(d,filter));for(const d of docs){Object.assign(d,update.$set||update);this._save(d);}return {modifiedCount:docs.length};}
  async updateOne(filter,update,options={}){let d=this._all().find(x=>matches(x,filter));if(!d&&options.upsert){d={...(update.$setOnInsert||{}),_id:id(),createdAt:now()};}if(!d)return {matchedCount:0};Object.assign(d,update.$set||{});this._save(d);return {matchedCount:1};}
  async findByIdAndUpdate(id,update,options={}){const d=this._get(id);if(!d)return null;Object.assign(d,update.$set||update);this._save(d);return attachArrayMethods(new Doc(this,d));}
 }
 const modelsByCollection={};
-const defs={User:'users',Post:'posts',Message:'messages',Notification:'notifications',Gift:'gifts',GiftItem:'giftItems',Topup:'topups',GiftTransfer:'giftTransfers',Ledger:'ledgers',Report:'reports',Story:'stories',Setting:'settings',Audit:'audits'};
+const defs={User:'users',Post:'posts',Message:'messages',FriendRequest:'friendRequests',Group:'groups',GroupMessage:'groupMessages',Notification:'notifications',Gift:'gifts',GiftItem:'giftItems',Topup:'topups',GiftTransfer:'giftTransfers',Ledger:'ledgers',Report:'reports',Story:'stories',Setting:'settings',Audit:'audits',Advert:'adverts'};
 
 function atomicPurchaseGift(userId, giftId, quantity) {
  return db.transaction(() => {

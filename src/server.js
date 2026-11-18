@@ -16,6 +16,9 @@ const M = require('./models');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
+// Presence is tracked per authenticated socket so multiple tabs/devices do not
+// incorrectly mark a member offline when only one connection closes.
+const onlineUsers = new Map();
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
 if (!JWT_SECRET) throw new Error('JWT_SECRET is required. Copy .env.example to .env and set it.');
@@ -37,11 +40,21 @@ const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${path.extname(file.originalname).toLowerCase()}`)
 });
-const upload = multer({
+const imageUpload = multer({
   storage,
-  limits: { fileSize: (Number(process.env.MAX_UPLOAD_MB) || 8) * 1024 * 1024 },
+  limits: { fileSize: (Number(process.env.MAX_IMAGE_MB) || 8) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (!/^image\/(jpeg|png|gif|webp)$/.test(file.mimetype)) return cb(new Error('Only JPG, PNG, GIF and WEBP images are accepted.'));
+    if (!/^image\/(jpeg|png|gif|webp)$/.test(file.mimetype)) return cb(new Error('Choose a JPG, PNG, GIF or WEBP image.'));
+    cb(null, true);
+  }
+});
+const mediaUpload = multer({
+  storage,
+  limits: { fileSize: (Number(process.env.MAX_MEDIA_MB) || 50) * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const imageOk = /^image\/(jpeg|png|gif|webp)$/.test(file.mimetype);
+    const videoOk = /^video\/(mp4|webm|quicktime)$/.test(file.mimetype);
+    if (!imageOk && !videoOk) return cb(new Error('Upload an image (JPG/PNG/GIF/WEBP) or video (MP4/WEBM/MOV).'));
     cb(null, true);
   }
 });
@@ -63,7 +76,7 @@ const safeUser = u => ({
   bio: u.bio, avatar: u.avatar, role: u.role, premium: u.premium,
   premiumUntil: u.premiumUntil, walletBalance: u.walletBalance,
   followersCount: u.followers?.length || 0, followingCount: u.following?.length || 0,
-  createdAt: u.createdAt
+  createdAt: u.createdAt, isOnline: (onlineUsers.get(String(u._id))?.size || 0) > 0
 });
 const tokenFor = u => jwt.sign({ id: u._id.toString() }, JWT_SECRET, { expiresIn: '7d' });
 const auth = async (req, res, next) => {
@@ -131,9 +144,10 @@ app.get('/api/config', async (_req, res) => {
   const methods = await M.Setting.findOne({ key: 'paymentMethods' }).lean();
   const plans = await M.Setting.findOne({ key: 'premiumPlans' }).lean();
   const platform = await M.Setting.findOne({ key: 'platform' }).lean();
+  const appearance = await M.Setting.findOne({ key: 'appearance' }).lean();
   const iceServers = [{ urls: process.env.STUN_URL || 'stun:stun.l.google.com:19302' }];
   if (process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) iceServers.push({ urls: process.env.TURN_URL, username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL });
-  res.json({ paymentMethods: methods?.value || {}, premiumPlans: plans?.value || [], platform: platform?.value || {}, rtc: { iceServers } });
+  res.json({ paymentMethods: methods?.value || {}, premiumPlans: plans?.value || [], platform: platform?.value || {}, appearance: appearance?.value || { primary:'#2878f0', secondary:'#4c9bff', background:'#f5f8fc', surface:'#ffffff', text:'#15233b', mode:'light', decoration:'none', eventLabel:'' }, rtc: { iceServers } });
 });
 
 // Authentication
@@ -161,12 +175,17 @@ app.post('/api/auth/login', async (req, res) => {
 });
 app.post('/api/auth/logout', (_req, res) => { res.clearCookie('chathsi'); res.json({ ok: true }); });
 app.get('/api/me', auth, (req, res) => res.json({ user: safeUser(req.user) }));
-app.patch('/api/me', auth, upload.single('avatar'), async (req, res) => {
+app.patch('/api/me', auth, imageUpload.single('avatar'), async (req, res) => {
   const { displayName, bio } = req.body;
   if (displayName !== undefined) req.user.displayName = String(displayName).slice(0, 50);
   if (bio !== undefined) req.user.bio = String(bio).slice(0, 180);
   if (req.file) req.user.avatar = `/uploads/${req.file.filename}`;
-  await req.user.save(); res.json({ user: safeUser(req.user) });
+  await req.user.save();
+  const updatedUser = safeUser(req.user);
+  // Broadcast only public profile fields; never expose email, wallet balance or account controls.
+  const publicProfile = { id: updatedUser.id, username: updatedUser.username, displayName: updatedUser.displayName, bio: updatedUser.bio, avatar: updatedUser.avatar, premium: updatedUser.premium, followersCount: updatedUser.followersCount, followingCount: updatedUser.followingCount };
+  io.except(`user:${req.user._id}`).emit('profile:updated', { user: publicProfile });
+  res.json({ user: updatedUser });
 });
 
 // Users, follows, blocking
@@ -189,6 +208,50 @@ app.post('/api/users/:id/follow', auth, async (req, res) => {
   await Promise.all([req.user.save(), target.save()]);
   res.json({ following: !following });
 });
+// Friend requests are separate from follows. A friendship is mutual only after acceptance.
+app.post('/api/friends/request/:id', auth, async (req, res) => {
+  const target = await M.User.findById(req.params.id);
+  if (!target || target.isSuspended || String(target._id) === String(req.user._id)) return res.status(404).json({ error: 'Member not found.' });
+  if (req.user.blockedUsers.some(id => String(id) === String(target._id)) || target.blockedUsers.some(id => String(id) === String(req.user._id))) return res.status(403).json({ error: 'Friend requests are unavailable.' });
+  const existing = await M.FriendRequest.findOne({ $or: [{ sender: req.user._id, recipient: target._id }, { sender: target._id, recipient: req.user._id }] });
+  if (existing) return res.status(409).json({ error: existing.status === 'accepted' ? 'You are already friends.' : 'A friend request already exists.' });
+  const request = await M.FriendRequest.create({ sender: req.user._id, recipient: target._id, status: 'pending' });
+  await notify(target._id, req.user._id, 'friend_request', `${req.user.username} sent you a friend request.`, '/explore');
+  io.to(`user:${target._id}`).emit('friend:request', { requestId: request._id });
+  res.status(201).json({ requestId: request._id, status: 'pending' });
+});
+app.get('/api/friends', auth, async (req, res) => {
+  const [incoming, outgoing, accepted] = await Promise.all([
+    M.FriendRequest.find({ recipient: req.user._id, status: 'pending' }).sort({ createdAt: -1 }),
+    M.FriendRequest.find({ sender: req.user._id, status: 'pending' }).sort({ createdAt: -1 }),
+    M.FriendRequest.find({ $or: [{ sender: req.user._id, status: 'accepted' }, { recipient: req.user._id, status: 'accepted' }] })
+  ]);
+  const hydrate = async (r, otherId) => { const u = await M.User.findById(otherId); return u ? { id: r._id, user: safeUser(u), createdAt: r.createdAt } : null; };
+  res.json({ incoming: (await Promise.all(incoming.map(r => hydrate(r, r.sender)))).filter(Boolean), outgoing: (await Promise.all(outgoing.map(r => hydrate(r, r.recipient)))).filter(Boolean), friends: (await Promise.all(accepted.map(r => hydrate(r, String(r.sender) === String(req.user._id) ? r.recipient : r.sender)))).filter(Boolean) });
+});
+app.post('/api/friends/:requestId/respond', auth, async (req, res) => {
+  const request = await M.FriendRequest.findById(req.params.requestId);
+  if (!request || String(request.recipient) !== String(req.user._id) || request.status !== 'pending') return res.status(404).json({ error: 'Friend request not found.' });
+  const action = req.body.action;
+  if (!['accept', 'decline'].includes(action)) return res.status(400).json({ error: 'Choose accept or decline.' });
+  request.status = action === 'accept' ? 'accepted' : 'declined'; request.respondedAt = new Date().toISOString(); await request.save();
+  if (action === 'accept') await notify(request.sender, req.user._id, 'friend_accepted', `${req.user.username} accepted your friend request.`, '/explore');
+  io.to(`user:${request.sender}`).emit('friend:updated', { status: request.status });
+  res.json({ status: request.status });
+});
+app.get('/api/streaks/:userId', auth, async (req, res) => {
+  const other = await M.User.findById(req.params.userId);
+  if (!other) return res.status(404).json({ error: 'Member not found.' });
+  const key = convoKey(req.user._id, other._id);
+  const messages = await M.Message.find({ conversationKey: key }).sort({ createdAt: 1 }).limit(5000);
+  const days = [...new Set(messages.map(m => new Date(m.createdAt).toISOString().slice(0, 10)))].sort();
+  let current = 0, best = 0, run = 0, previous = null;
+  for (const day of days) { const d = new Date(day + 'T00:00:00Z'); run = previous && (d - previous) === 86400000 ? run + 1 : 1; best = Math.max(best, run); previous = d; }
+  const today = new Date().toISOString().slice(0, 10), yesterday = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  if (days.length && [today, yesterday].includes(days[days.length - 1])) { current = 1; for (let i = days.length - 1; i > 0; i--) { if ((new Date(days[i] + 'T00:00:00Z') - new Date(days[i-1] + 'T00:00:00Z')) === 86400000) current++; else break; } }
+  res.json({ current, best, activeToday: days.includes(today), days: days.length });
+});
+
 app.post('/api/users/:id/block', auth, async (req, res) => {
   if (String(req.user._id) === req.params.id) return res.status(400).json({ error: 'You cannot block yourself.' });
   const target = await M.User.findById(req.params.id);
@@ -203,12 +266,16 @@ app.get('/api/posts', auth, async (req, res) => {
     .populate('comments.author', 'username displayName avatar');
   res.json({ posts });
 });
-app.post('/api/posts', auth, upload.single('media'), async (req, res) => {
+app.post('/api/posts', auth, mediaUpload.single('media'), async (req, res) => {
   const text = String(req.body.text || '').trim();
   const mediaUrl = req.file ? `/uploads/${req.file.filename}` : '';
-  if (!text && !mediaUrl) return res.status(400).json({ error: 'Write something or attach an image.' });
-  const post = await M.Post.create({ author: req.user._id, text, mediaUrl });
+  const mediaType = req.file ? (req.file.mimetype.startsWith('video/') ? 'video' : 'image') : '';
+  const allowedMediaFilters = ['none','vivid','warm','cool','mono','vintage'];
+  const mediaFilter = allowedMediaFilters.includes(req.body.mediaFilter) ? req.body.mediaFilter : 'none';
+  if (!text && !mediaUrl) return res.status(400).json({ error: 'Write something or attach a photo/video.' });
+  const post = await M.Post.create({ author: req.user._id, text, mediaUrl, mediaType, mediaFilter });
   await post.populate('author', 'username displayName avatar premium');
+  io.except(`user:${req.user._id}`).emit('feed:refresh', { type: 'post-created', postId: String(post._id) });
   res.status(201).json({ post });
 });
 app.post('/api/posts/:id/like', auth, async (req, res) => {
@@ -219,7 +286,9 @@ app.post('/api/posts/:id/like', auth, async (req, res) => {
     post.likes.addToSet(req.user._id);
     await notify(post.author, req.user._id, 'like', `${req.user.username} liked your post.`, `post:${post._id}`);
   }
-  await post.save(); res.json({ liked: !liked, likes: post.likes.length });
+  await post.save();
+  io.except(`user:${req.user._id}`).emit('feed:refresh', { type: 'post-liked', postId: String(post._id) });
+  res.json({ liked: !liked, likes: post.likes.length });
 });
 app.post('/api/posts/:id/comments', auth, async (req, res) => {
   const text = String(req.body.text || '').trim();
@@ -229,6 +298,7 @@ app.post('/api/posts/:id/comments', auth, async (req, res) => {
   post.comments.push({ author: req.user._id, text }); await post.save();
   await notify(post.author, req.user._id, 'comment', `${req.user.username} commented on your post.`, `post:${post._id}`);
   await post.populate('comments.author', 'username displayName avatar');
+  io.except(`user:${req.user._id}`).emit('feed:refresh', { type: 'post-commented', postId: String(post._id) });
   res.status(201).json({ comments: post.comments });
 });
 app.post('/api/posts/:id/report', auth, async (req, res) => {
@@ -243,11 +313,16 @@ app.get('/api/stories', auth, async (_req, res) => {
   const stories = await M.Story.find({ expiresAt: { $gt: new Date() } }).sort({ createdAt: -1 }).populate('author', 'username avatar');
   res.json({ stories });
 });
-app.post('/api/stories', auth, upload.single('media'), async (req, res) => {
-  const text = String(req.body.text || '').slice(0, 500);
+app.post('/api/stories', auth, mediaUpload.single('media'), async (req, res) => {
+  const text = String(req.body.text || '').trim().slice(0, 500);
   const mediaUrl = req.file ? `/uploads/${req.file.filename}` : '';
-  if (!text && !mediaUrl) return res.status(400).json({ error: 'Add text or an image to your story.' });
-  const story = await M.Story.create({ author: req.user._id, text, mediaUrl, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) });
+  const mediaType = req.file ? (req.file.mimetype.startsWith('video/') ? 'video' : 'image') : '';
+  const allowedMediaFilters = ['none','vivid','warm','cool','mono','vintage'];
+  const mediaFilter = allowedMediaFilters.includes(req.body.mediaFilter) ? req.body.mediaFilter : 'none';
+  if (!text && !mediaUrl) return res.status(400).json({ error: 'Add a caption or choose a photo/video for your story.' });
+  const story = await M.Story.create({ author: req.user._id, text, mediaUrl, mediaType, mediaFilter, expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000) });
+  await story.populate('author', 'username displayName avatar');
+  io.except(`user:${req.user._id}`).emit('story:created', { storyId: String(story._id) });
   res.status(201).json({ story });
 });
 
@@ -297,6 +372,124 @@ app.post('/api/messages/:userId', auth, async (req, res) => {
   await notify(recipient._id, req.user._id, 'message', `New message from ${req.user.username}.`);
   res.status(201).json({ message });
 });
+// Stickers are first-class chat messages, stored as a safe catalogue key/emoji rather than arbitrary HTML.
+const stickerCatalog = [
+  { id:'heart', emoji:'💖', label:'Heart' }, { id:'laugh', emoji:'😂', label:'Laughing' }, { id:'love', emoji:'🥰', label:'In love' },
+  { id:'fire', emoji:'🔥', label:'Fire' }, { id:'wow', emoji:'😮', label:'Wow' }, { id:'cry', emoji:'😭', label:'Crying' },
+  { id:'clap', emoji:'👏', label:'Clapping' }, { id:'cool', emoji:'😎', label:'Cool' }, { id:'party', emoji:'🎉', label:'Celebration' },
+  { id:'thanks', emoji:'🙏', label:'Thank you' }, { id:'hug', emoji:'🤗', label:'Hug' }, { id:'thumbs', emoji:'👍', label:'Thumbs up' },
+  { id:'star', emoji:'⭐', label:'Star' }, { id:'sad', emoji:'😔', label:'Sad' }, { id:'wave', emoji:'👋', label:'Hello' }, { id:'rocket', emoji:'🚀', label:'Rocket' }
+];
+app.get('/api/stickers', auth, (_req, res) => res.json({ stickers: stickerCatalog }));
+app.post('/api/messages/:userId/sticker', auth, async (req, res) => {
+  const sticker = stickerCatalog.find(x => x.id === String(req.body.stickerId || ''));
+  const recipient = await M.User.findById(req.params.userId);
+  if (!sticker || !recipient || recipient.isSuspended) return res.status(400).json({ error: 'Sticker or recipient is unavailable.' });
+  if (req.user.blockedUsers.some(id => String(id) === String(recipient._id)) || recipient.blockedUsers.some(id => String(id) === String(req.user._id))) return res.status(403).json({ error: 'Messaging is unavailable.' });
+  const message = await M.Message.create({ conversationKey: convoKey(req.user._id, recipient._id), sender: req.user._id, recipient: recipient._id, text: sticker.emoji, messageType: 'sticker', stickerId: sticker.id });
+  await message.populate('sender', 'username avatar'); io.to(`user:${recipient._id}`).emit('message', message);
+  await notify(recipient._id, req.user._id, 'message', `New sticker from ${req.user.username}.`);
+  res.status(201).json({ message });
+});
+
+// Group chats
+const isGroupMember = (group, userId) => !!group && (group.members || []).some(id => String(id) === String(userId));
+const leaveGroupSockets = (groupId, userId) => { for (const sock of io.sockets.sockets.values()) if (sock.userId === String(userId)) sock.leave(`group:${groupId}`); };
+const isGroupAdmin = (group, userId) => !!group && (String(group.owner) === String(userId) || (group.admins || []).some(id => String(id) === String(userId)));
+const groupSummary = async (group, userId) => {
+  const members = await Promise.all((group.members || []).map(async id => { const u = await M.User.findById(id); return u ? { id: u._id, username: u.username, displayName: u.displayName, avatar: u.avatar } : null; }));
+  const last = await M.GroupMessage.findOne({ group: group._id }).sort({ createdAt: -1 });
+  return { id: group._id, name: group.name, description: group.description || '', avatar: group.avatar || '', owner: String(group.owner), admins: (group.admins || []).map(String), members: members.filter(Boolean), memberCount: members.filter(Boolean).length, isAdmin: isGroupAdmin(group,userId), lastMessage: last ? { text: last.text || '', sender: String(last.sender), createdAt: last.createdAt } : null };
+};
+app.get('/api/groups', auth, async (req, res) => {
+  const groups = await M.Group.find({ members: req.user._id }).sort({ updatedAt: -1 }).limit(200);
+  res.json({ groups: await Promise.all(groups.map(g => groupSummary(g, req.user._id))) });
+});
+app.post('/api/groups', auth, async (req, res) => {
+  const name = String(req.body.name || '').trim().slice(0,60);
+  const description = String(req.body.description || '').trim().slice(0,240);
+  const usernames = Array.isArray(req.body.usernames) ? req.body.usernames : [];
+  if (name.length < 2) return res.status(400).json({ error: 'Group name must contain at least 2 characters.' });
+  if (usernames.length > 49) return res.status(400).json({ error: 'A group can have at most 50 members including you.' });
+  const memberIds = [String(req.user._id)];
+  for (const raw of usernames) {
+    const username = String(raw || '').trim().replace(/^@/,''); if (!username) continue;
+    const u = await M.User.findOne({ username });
+    if (!u || u.isSuspended) return res.status(400).json({ error: `User @${username} was not found or is unavailable.` });
+    if (!memberIds.includes(String(u._id))) memberIds.push(String(u._id));
+  }
+  const group = await M.Group.create({ name, description, owner: req.user._id, members: memberIds, admins: [String(req.user._id)] });
+  for (const id of memberIds) { for (const sock of io.sockets.sockets.values()) if (sock.userId === id) sock.join(`group:${group._id}`); io.to(`user:${id}`).emit('group:updated', { groupId: group._id }); if (id !== String(req.user._id)) await notify(id, req.user._id, 'group', `You were added to ${name}.`, '/messages'); }
+  res.status(201).json({ group: await groupSummary(group, req.user._id) });
+});
+app.get('/api/groups/:groupId/messages', auth, async (req, res) => {
+  const group = await M.Group.findById(req.params.groupId);
+  if (!isGroupMember(group, req.user._id)) return res.status(403).json({ error: 'You are not a member of this group.' });
+  const messages = await M.GroupMessage.find({ group: group._id }).sort({ createdAt: 1 }).limit(300);
+  const hydrated = await Promise.all(messages.map(async m => { const sender = await M.User.findById(m.sender); return { ...m.toJSON(), sender: sender ? { _id: sender._id, username: sender.username, avatar: sender.avatar } : null }; }));
+  res.json({ group: await groupSummary(group, req.user._id), messages: hydrated });
+});
+app.post('/api/groups/:groupId/messages', auth, mediaUpload.single('media'), async (req, res) => {
+  const group = await M.Group.findById(req.params.groupId);
+  if (!isGroupMember(group, req.user._id)) return res.status(403).json({ error: 'You are not a member of this group.' });
+  const sticker = stickerCatalog.find(x => x.id === String(req.body.stickerId || ''));
+  const text = sticker ? sticker.emoji : String(req.body.text || '').trim().slice(0,4000);
+  const mediaUrl = req.file ? `/uploads/${req.file.filename}` : '';
+  const mediaType = req.file ? (req.file.mimetype.startsWith('video/') ? 'video' : 'image') : '';
+  if (!text && !mediaUrl) return res.status(400).json({ error: 'Write a message or attach a photo/video.' });
+  const message = await M.GroupMessage.create({ group: group._id, sender: req.user._id, text, mediaUrl, mediaType, messageType: sticker ? 'sticker' : 'text', stickerId: sticker?.id || '' });
+  group.lastMessageAt = message.createdAt; await group.save();
+  const payload = { ...message.toJSON(), sender: { _id: req.user._id, username: req.user.username, avatar: req.user.avatar } };
+  io.to(`group:${group._id}`).emit('group:message', payload);
+  for (const id of group.members || []) if (String(id) !== String(req.user._id)) await notify(id, req.user._id, 'group_message', `New message in ${group.name}.`, '/messages');
+  res.status(201).json({ message: payload });
+});
+app.post('/api/groups/:groupId/members', auth, async (req, res) => {
+  const group = await M.Group.findById(req.params.groupId);
+  if (!isGroupAdmin(group, req.user._id)) return res.status(403).json({ error: 'Only group admins can add members.' });
+  const username = String(req.body.username || '').trim().replace(/^@/,'');
+  const user = await M.User.findOne({ username });
+  if (!user || user.isSuspended) return res.status(404).json({ error: 'User not found.' });
+  if (isGroupMember(group, user._id)) return res.status(409).json({ error: 'That user is already in the group.' });
+  if ((group.members || []).length >= 50) return res.status(400).json({ error: 'This group has reached the 50-member limit.' });
+  group.members.push(String(user._id)); await group.save();
+  for (const sock of io.sockets.sockets.values()) if (sock.userId === String(user._id)) sock.join(`group:${group._id}`);
+  io.to(`user:${user._id}`).emit('group:updated', { groupId: group._id });
+  await notify(user._id, req.user._id, 'group', `You were added to ${group.name}.`, '/messages');
+  res.json({ group: await groupSummary(group, req.user._id) });
+});
+app.patch('/api/groups/:groupId/members/:userId', auth, async (req, res) => {
+  const group = await M.Group.findById(req.params.groupId);
+  if (!isGroupAdmin(group, req.user._id)) return res.status(403).json({ error: 'Only group admins can manage members.' });
+  const targetId = String(req.params.userId);
+  if (!isGroupMember(group, targetId)) return res.status(404).json({ error: 'Member not found.' });
+  if (targetId === String(group.owner)) return res.status(400).json({ error: 'The group owner cannot be removed or demoted.' });
+  const action = String(req.body.action || '');
+  if (action === 'remove') { group.members = group.members.filter(id => String(id) !== targetId); group.admins = (group.admins || []).filter(id => String(id) !== targetId); }
+  else if (action === 'promote' && !(group.admins || []).some(id => String(id) === targetId)) group.admins.push(targetId);
+  else if (action === 'demote') group.admins = (group.admins || []).filter(id => String(id) !== targetId);
+  else return res.status(400).json({ error: 'Unsupported member action.' });
+  await group.save(); if (action === 'remove') leaveGroupSockets(group._id, targetId); io.to(`user:${targetId}`).emit('group:updated', { groupId: group._id });
+  res.json({ group: await groupSummary(group, req.user._id) });
+});
+app.delete('/api/groups/:groupId', auth, async (req, res) => {
+  const group = await M.Group.findById(req.params.groupId);
+  if (!group) return res.status(404).json({ error: 'Group not found.' });
+  if (String(group.owner) !== String(req.user._id)) return res.status(403).json({ error: 'Only the group owner can delete this group.' });
+  await M.GroupMessage.deleteMany({ group: group._id });
+  await M.Group.deleteMany({ _id: group._id });
+  for (const id of group.members || []) { leaveGroupSockets(group._id, id); io.to(`user:${id}`).emit('group:updated', { groupId: group._id, deleted: true }); }
+  res.json({ ok: true });
+});
+app.post('/api/groups/:groupId/leave', auth, async (req, res) => {
+  const group = await M.Group.findById(req.params.groupId);
+  if (!isGroupMember(group, req.user._id)) return res.status(404).json({ error: 'Group not found.' });
+  if (String(group.owner) === String(req.user._id)) return res.status(400).json({ error: 'The owner must transfer ownership or delete the group before leaving.' });
+  group.members = group.members.filter(id => String(id) !== String(req.user._id)); group.admins = (group.admins || []).filter(id => String(id) !== String(req.user._id));
+  await group.save(); leaveGroupSockets(group._id, req.user._id); io.to(`user:${req.user._id}`).emit('group:updated', { groupId: group._id });
+  res.json({ ok: true });
+});
+
 app.post('/api/messages/:userId/voice', auth, voiceUpload.single('audio'), async (req, res) => {
   const recipient = await M.User.findById(req.params.userId);
   if (!recipient || recipient.isSuspended) return res.status(404).json({ error: 'Recipient not found.' });
@@ -363,7 +556,29 @@ app.post('/api/wallet/gift-transfer', auth, async (req, res) => {
   res.status(201).json({ transfer: result.transfer, message: 'Gift transfer submitted for admin approval.' });
 });
 
+// CHATHSI Ads: contextual, age-appropriate campaigns. Every campaign is reviewed by an admin.
+const safeAdUrl = value => { try { const u = new URL(String(value || '')); return u.protocol === 'https:' ? u.toString() : ''; } catch { return ''; } };
+app.get('/api/ads', auth, async (req, res) => {
+  const now = new Date().toISOString();
+  const ads = await M.Advert.find({ status: 'approved', paymentStatus: 'approved', startsAt: { $lte: now }, endsAt: { $gte: now } }).sort({ createdAt: -1 }).limit(3);
+  res.json({ ads: ads.filter(a => Number(a.budget || 0) > Number(a.spent || 0)).map(a => ({ id:a._id, businessName:a.businessName, headline:a.headline, body:a.body, mediaUrl:a.mediaUrl, destinationUrl:a.destinationUrl, placement:a.placement })) });
+});
+app.post('/api/ads/:id/impression', auth, async (req,res)=>{const ad=await M.Advert.findById(req.params.id);if(!ad||ad.status!=='approved')return res.status(404).json({error:'Ad unavailable.'});ad.impressions=Number(ad.impressions||0)+1;await ad.save();res.json({ok:true})});
+app.post('/api/ads/:id/click', auth, async (req,res)=>{const ad=await M.Advert.findById(req.params.id);if(!ad||ad.status!=='approved')return res.status(404).json({error:'Ad unavailable.'});ad.clicks=Number(ad.clicks||0)+1;await ad.save();res.json({ok:true,url:ad.destinationUrl})});
+app.post('/api/ads/:id/report', auth, async (req,res)=>{const ad=await M.Advert.findById(req.params.id);if(!ad)return res.status(404).json({error:'Advert not found.'});const reason=String(req.body.reason||'').trim().slice(0,500);if(!reason)return res.status(400).json({error:'Please provide a reason.'});await M.Report.create({reporter:req.user._id,targetType:'advert',targetId:ad._id,reason});res.status(201).json({ok:true})});
+app.post('/api/advertiser/campaigns', auth, mediaUpload.single('media'), async (req,res)=>{
+  const businessName=String(req.body.businessName||'').trim().slice(0,80), headline=String(req.body.headline||'').trim().slice(0,100), body=String(req.body.body||'').trim().slice(0,500), destinationUrl=safeAdUrl(req.body.destinationUrl);
+  const budget=Number(req.body.budget), startsAt=new Date(req.body.startsAt), endsAt=new Date(req.body.endsAt);
+  if(!businessName||!headline||!body||!destinationUrl||!Number.isFinite(budget)||budget<1000||!Number.isFinite(startsAt.getTime())||!Number.isFinite(endsAt.getTime())||endsAt<=startsAt||endsAt<=new Date())return res.status(400).json({error:'Complete all fields. Use an HTTPS destination, budget of at least ₦1,000, and valid future campaign dates.'});
+  const ad=await M.Advert.create({advertiser:req.user._id,businessName,headline,body,destinationUrl,budget,spent:0,startsAt:startsAt.toISOString(),endsAt:endsAt.toISOString(),mediaUrl:req.file?`/uploads/${req.file.filename}`:'',placement:['feed','discover','communities'].includes(req.body.placement)?req.body.placement:'feed',status:'pending',paymentStatus:'pending'});
+  await M.Audit.create({admin:req.user._id,targetType:'advert',targetId:ad._id,details:'Advertiser submitted campaign for review.'});
+  res.status(201).json({campaign:ad,message:'Campaign submitted. It will not run until an admin approves the advert and payment.'});
+});
+app.get('/api/advertiser/campaigns', auth, async (req,res)=>{const campaigns=await M.Advert.find({advertiser:req.user._id}).sort({createdAt:-1}).limit(100);res.json({campaigns})});
+
 // Admin
+app.get('/api/admin/ads', auth, admin, async (_req,res)=>{const ads=await M.Advert.find().sort({createdAt:-1}).limit(200).populate('advertiser','username email');res.json({ads})});
+app.post('/api/admin/ads/:id/review', auth, admin, async (req,res)=>{const ad=await M.Advert.findById(req.params.id);if(!ad)return res.status(404).json({error:'Campaign not found.'});const status=['approved','rejected','paused'].includes(req.body.status)?req.body.status:'';const paymentStatus=['approved','rejected','pending'].includes(req.body.paymentStatus)?req.body.paymentStatus:ad.paymentStatus;if(!status)return res.status(400).json({error:'Invalid campaign status.'});ad.status=status;ad.paymentStatus=paymentStatus;ad.adminNote=String(req.body.note||'').slice(0,500);ad.reviewedBy=req.user._id;ad.reviewedAt=new Date().toISOString();await ad.save();await M.Audit.create({admin:req.user._id,targetType:'advert',targetId:ad._id,details:`Campaign ${status}; payment ${paymentStatus}.`});res.json({campaign:ad})});
 app.get('/api/admin/overview', auth, admin, async (_req, res) => {
   const [users, posts, pendingTopups, pendingTransfers, reports, ledger] = await Promise.all([
     M.User.countDocuments(), M.Post.countDocuments({ isRemoved: false }),
@@ -449,6 +664,26 @@ app.patch('/api/admin/payment-methods', auth, admin, async (req, res) => {
   await audit(req.user._id, 'payment_methods_updated', 'setting', 'paymentMethods', JSON.stringify(next));
   res.json({ paymentMethods: next });
 });
+app.patch('/api/admin/appearance', auth, admin, async (req, res) => {
+  const hex = value => /^#[0-9a-fA-F]{6}$/.test(String(value || '')) ? String(value) : null;
+  const modes = ['light', 'dark', 'midnight', 'rose'];
+  const decorations = ['none', 'celebration', 'christmas', 'valentine', 'halloween', 'newyear', 'independence'];
+  const current = (await M.Setting.findOne({ key: 'appearance' }))?.value || {};
+  const primary = hex(req.body.primary) || current.primary || '#2878f0';
+  const secondary = hex(req.body.secondary) || current.secondary || '#4c9bff';
+  const background = hex(req.body.background) || current.background || '#f5f8fc';
+  const surface = hex(req.body.surface) || current.surface || '#ffffff';
+  const text = hex(req.body.text) || current.text || '#15233b';
+  const mode = modes.includes(req.body.mode) ? req.body.mode : (current.mode || 'light');
+  const decoration = decorations.includes(req.body.decoration) ? req.body.decoration : (current.decoration || 'none');
+  const eventLabel = String(req.body.eventLabel || '').trim().slice(0, 60);
+  const next = { primary, secondary, background, surface, text, mode, decoration, eventLabel };
+  await M.Setting.updateOne({ key: 'appearance' }, { $set: { value: next } }, { upsert: true });
+  await audit(req.user._id, 'appearance_updated', 'setting', 'appearance', JSON.stringify(next));
+  io.emit('appearance:updated', next);
+  res.json({ appearance: next });
+});
+
 app.patch('/api/admin/plans', auth, admin, async (req, res) => {
   if (!Array.isArray(req.body.plans)) return res.status(400).json({ error: 'Plans must be an array.' });
   const plans = req.body.plans.filter(p => ['plus', 'pro'].includes(p.key)).map(p => ({
@@ -488,8 +723,29 @@ io.use(async (socket, next) => {
     socket.userId = String(user._id); next();
   } catch { next(new Error('Invalid session')); }
 });
-io.on('connection', socket => {
+io.on('connection', async socket => {
   socket.join(`user:${socket.userId}`);
+  const userSockets = onlineUsers.get(socket.userId) || new Set();
+  const wasOffline = userSockets.size === 0;
+  userSockets.add(socket.id);
+  onlineUsers.set(socket.userId, userSockets);
+  if (wasOffline) io.emit('presence:update', { userId: socket.userId, online: true });
+  socket.on('disconnect', () => {
+    const sockets = onlineUsers.get(socket.userId);
+    if (sockets) {
+      sockets.delete(socket.id);
+      if (!sockets.size) {
+        onlineUsers.delete(socket.userId);
+        io.emit('presence:update', { userId: socket.userId, online: false });
+      }
+    }
+  });
+  const memberGroups = await M.Group.find({ members: socket.userId });
+  memberGroups.forEach(group => socket.join(`group:${group._id}`));
+  socket.on('group:typing', async ({ groupId, active }) => {
+    const group = await M.Group.findById(String(groupId || ''));
+    if (isGroupMember(group, socket.userId)) socket.to(`group:${group._id}`).emit('group:typing', { groupId: group._id, userId: socket.userId, active: !!active });
+  });
   socket.on('typing', ({ recipientId, active }) => {
     if (recipientId) io.to(`user:${recipientId}`).emit('typing', { userId: socket.userId, active: !!active });
   });
@@ -504,7 +760,10 @@ io.on('connection', socket => {
     io.to(`user:${recipientId}`).emit(event, safePayload);
   };
   ['call:invite','call:accept','call:reject','call:end','call:offer','call:answer','call:ice'].forEach(event => {
-    socket.on(event, payload => { relayCallSignal(event, payload).catch(err => console.error('Call signalling error:', err.message)); });
+    socket.on(event, payload => {
+      if (event === 'call:invite' && !['audio','video'].includes(payload?.callType)) return;
+      relayCallSignal(event, payload).catch(err => console.error('Call signalling error:', err.message));
+    });
   });
 });
 

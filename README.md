@@ -1,43 +1,39 @@
-# CHATHSI — SQLite Edition
+# CHATHSI — Real-time Social Platform
 
-A responsive social-network starter built with Node.js, Express, SQLite, Socket.IO and vanilla HTML/CSS/JavaScript. The database and local uploads are designed to live on a Render Persistent Disk. **MongoDB is not required.**
+A responsive social-network starter built with Node.js, Express, SQLite, Socket.IO and vanilla HTML/CSS/JavaScript. Main brand colour: blue; premium styling: purple and gold. Footer credit: **BUILT BY JOSSY STUDIOS**.
 
 ## Included features
 
 - Registration, login, logout and editable user profiles
-- Social feed with text/image posts, likes, comments and sharing
+- Social feed with text/photo/video posts, likes, comments, sharing and photo/video/text filters
 - Follow/unfollow, user search and blocking
-- Direct messages with Socket.IO delivery while users are online
+- Direct messages with automatic Socket.IO delivery while both users are connected
+- Live online/offline indicators in people lists, suggestions, recent chats and the open conversation header
+- Presence tracks multiple tabs/devices for each account; a user is marked offline only after their last active socket disconnects
 - Free browser-recorded voice messages with playback controls and authenticated audio access
-- Free one-to-one browser voice calls using WebRTC and authenticated Socket.IO signalling
-- Optional TURN server configuration for improved call connectivity on restrictive networks
-- 24-hour stories
-- Notifications
+- Free one-to-one voice calls and video calls using WebRTC
+- Incoming and outgoing call ringtones, accept/reject, mute, camera toggle, call timer and hang-up
+- 24-hour photo, video and text stories with a story viewer and previous/next navigation
+- Live feed/story/profile updates, notifications and group chat updates
+- Group chats with member/admin management, image/video sharing and live messages
 - Reporting and admin moderation
 - Wallet, top-up requests, gift catalogue and gift inventory
 - Admin-issued free gifts
 - Admin dashboard for user moderation, payment-method settings, gift management, top-up review, gift-transfer review, premium plans and platform settings
 - Audit log and wallet ledger
-- Blue primary theme; purple/gold premium styling
-- Footer: **BUILT BY JOSSY STUDIOS**
+- Admin-controlled global colours, light/dark/midnight/rose themes and seasonal decorations
 
-## Confirmed CHATHSI wallet rules
+## Important hosting and data warning
 
-1. Gift conversion is 100% of the gift's configured NGN face value.
-2. Every top-up request requires administrator approval, including card requests in this starter.
-3. Every gift transfer requires administrator approval.
-4. Only administrators can issue free gifts.
-5. A gift is locked while its transfer request is pending.
-6. When approved, the gift is consumed and the recipient receives its full configured face value as internal CHATHSI credits. A consumed gift cannot be transferred again.
-7. Credits are platform-only credits in this starter; they are not cash and cannot be withdrawn.
-8. Wallet purchases, top-up approvals and gift-transfer approvals use SQLite transactions to prevent duplicate approvals and concurrent overspending.
-9. Admin actions and wallet changes are recorded in audit/ledger records.
+This ZIP is configured for the **Render Free web-service plan with temporary `/tmp` storage**, because that plan does not provide a Persistent Disk. It is a demo/testing deployment, not safe permanent storage. Render may replace the instance or clear temporary files during deploys/restarts. That can erase accounts, posts, messages, wallet records, stories and uploaded media. Do not use this ephemeral-storage deployment for real-money balances or as a permanent production social network.
+
+For durable launch, move SQLite and uploads to persistent storage (a paid persistent disk) or migrate the database to managed PostgreSQL and media to object storage. A single SQLite file must not be shared across multiple app instances.
 
 ## Requirements
 
-- Node.js 20 or later
+- Node.js 22 (pinned in `package.json` and `.node-version`)
 - npm
-- A Render web service with a Persistent Disk for hosted deployment
+- GitHub account and Render web service for hosted deployment
 
 ## Run locally
 
@@ -46,7 +42,9 @@ npm install
 cp .env.example .env
 ```
 
-For local development, change these `.env` values to local paths and settings:
+On Windows PowerShell, use `Copy-Item .env.example .env` instead of `cp`.
+
+Edit `.env` and set a long, random `JWT_SECRET`, a unique `ADMIN_EMAIL`, and a strong `ADMIN_PASSWORD`. For local development use `COOKIE_SECURE=false`; Render uses HTTPS and `COOKIE_SECURE=true`.
 
 ```env
 NODE_ENV=development
@@ -55,10 +53,10 @@ DATABASE_PATH=./data/chathsi.db
 UPLOAD_DIR=./uploads
 VOICE_DIR=./voice-private
 COOKIE_SECURE=false
-JWT_SECRET=replace-with-a-long-random-secret
+JWT_SECRET=replace-with-a-long-random-secret-at-least-32-characters
 ADMIN_EMAIL=you@example.com
 ADMIN_USERNAME=chathsi_admin
-ADMIN_PASSWORD=replace-with-a-unique-strong-password
+ADMIN_PASSWORD=replace-with-a-unique-strong-admin-password
 ```
 
 Then run:
@@ -67,97 +65,99 @@ Then run:
 npm start
 ```
 
-Open `http://localhost:3000`.
+Open `http://localhost:3000`. The server creates the first administrator on startup only when `ADMIN_EMAIL` and a non-placeholder `ADMIN_PASSWORD` are configured. If that admin already exists, changing the environment variable does not automatically reset the password.
 
-The server creates the first administrator on startup only when `ADMIN_EMAIL` and a non-placeholder `ADMIN_PASSWORD` are configured. Keep the admin password and JWT secret private. If the admin already exists, changing the environment variable does not automatically reset that account's password.
+## Deploy the current demo build to Render Free
 
-## Deploy to Render with SQLite
-
-1. Push the contents of this project folder to a GitHub repository.
-2. In Render, choose **New → Web Service** and connect the repository.
-3. Use Node as the runtime, `npm install` as the build command and `npm start` as the start command.
-4. Choose a plan that supports a Persistent Disk. Render's free web-service plan cannot attach a persistent disk.
-5. Create and attach a Persistent Disk with mount path `/var/data/chathsi`.
-6. In Environment, set:
+1. Download and extract this ZIP.
+2. Open the extracted `CHATHSI` folder. Upload the **contents** of that folder to the root of your GitHub repository (not the ZIP file itself).
+3. Commit the changes to the repository's `main` branch.
+4. In Render, open your existing CHATHSI Web Service and confirm it is connected to the correct GitHub repository and `main` branch.
+5. Use build command `npm install` and start command `npm start`.
+6. In Render → Environment, set the following values. Keep `JWT_SECRET` and `ADMIN_PASSWORD` private and never commit them to GitHub.
 
 ```env
 NODE_ENV=production
-DATABASE_PATH=/var/data/chathsi/chathsi.db
-UPLOAD_DIR=/var/data/chathsi/uploads
-VOICE_DIR=/var/data/chathsi/voice-private
-MAX_VOICE_MB=10
+DATABASE_PATH=/tmp/chathsi.db
+UPLOAD_DIR=/tmp/chathsi-uploads
+VOICE_DIR=/tmp/chathsi-voice
 COOKIE_SECURE=true
-MAX_UPLOAD_MB=8
+MAX_IMAGE_MB=8
+MAX_MEDIA_MB=50
+MAX_VOICE_MB=12
+ADMIN_EMAIL=your-admin-email@example.com
+ADMIN_USERNAME=chathsi_admin
+ADMIN_PASSWORD=your-unique-strong-password
+JWT_SECRET=your-long-random-secret
 ```
 
-7. Add a long, random `JWT_SECRET`, plus a unique `ADMIN_EMAIL`, `ADMIN_USERNAME` and strong `ADMIN_PASSWORD`.
-8. Save changes and deploy. The SQLite database file, public image uploads and private voice-message files are created under the mounted disk.
-9. Test registration, login, posting, messaging, wallet actions and admin approvals.
-10. Configure backups and periodically test restoring a backup before inviting real users.
+7. Do **not** set a fixed `PORT`; Render supplies it automatically.
+8. Save the environment settings and trigger a deploy. If dependencies fail to build, verify that the service is using Node 22 and clear the build cache before redeploying.
+9. Open the deployed site in two separate browsers or private sessions, register two test users, and verify messages, online/offline status, voice calls and video calls in both directions.
+10. Remember that `/tmp` is temporary. Back up nothing important there; migrate to persistent database and media storage before inviting real users or relying on wallet records.
 
-A sample `render.yaml` is included as a starting point for a Render Blueprint. Review the service plan and disk size/pricing before applying it.
+The included `render.yaml` is a Free-plan, temporary-storage blueprint example. Review it before applying it to an existing service.
 
-## Voice messaging and calling
+## Presence behaviour
 
-- Voice messages are recorded in the browser with `MediaRecorder`, uploaded to `VOICE_DIR`, and stored as message metadata in SQLite. The audio endpoint requires login and verifies that the requester is a sender or recipient of that message.
-- Voice calls use WebRTC peer connections; Socket.IO is used only for authenticated call signalling (invite, accept/reject, offer/answer, ICE candidates and hang-up). Audio is not routed through SQLite or stored on the server.
-- Browser microphone access requires HTTPS (or localhost during development) and user permission. Test on the actual browsers/devices your community uses.
-- The app includes a public STUN server as a basic connectivity aid. For reliable connections across strict NATs, configure a TURN provider using `TURN_URL`, `TURN_USERNAME` and `TURN_CREDENTIAL` in Render Environment. Use provider-issued, preferably short-lived credentials; never commit them to GitHub. TURN relay usage may cost money.
-- Current calling scope is one-to-one voice only. Group calls and video calls are not implemented by this update.
+- The server authenticates every Socket.IO connection using the HttpOnly CHATHSI session cookie; the browser cannot claim another user's identity.
+- A member becomes online when their first authenticated socket connects.
+- If the same member has multiple tabs/devices open, closing one tab does not mark them offline while another socket remains connected.
+- The server broadcasts online/offline transitions; visible status labels update without a page refresh.
+- Presence is in-memory and resets if the server process restarts. In a multi-instance deployment it must be moved to a shared presence store (for example Redis) before scaling horizontally.
 
-## Storage and scaling notes
+## Voice messages and calls
 
-- The SQLite database is stored at `DATABASE_PATH`; the uploads folder is stored at `UPLOAD_DIR`.
-- `DATABASE_PATH`, `UPLOAD_DIR` and `VOICE_DIR` must all be inside the Persistent Disk mount for data to survive deploys/restarts. Voice recordings are served through an authenticated route that checks conversation membership.
-- Keep one web-service instance for this SQLite deployment. Do not scale this SQLite file across multiple service instances.
-- Persistent Disk storage is a paid Render feature; the free web-service plan cannot attach one.
-- Back up the database file and uploads. WAL mode is enabled; use SQLite's backup API or stop the service before copying database files so the backup is consistent.
-- For high traffic or multiple app instances, migrate to managed PostgreSQL and object storage.
-
-## Payments and virtual credits
-
-This starter provides admin-controlled payment-method visibility and a manual top-up review queue. It does not collect card numbers/CVV and does not verify card payments automatically. A card top-up request in this starter is only a pending request; do not credit it until the actual provider confirms payment server-side.
-
-Before accepting real payments, the account/business owner must onboard with a supported payment provider, implement hosted checkout and signed server-side webhooks, reconcile references, and obtain appropriate legal/accounting advice. Never trust a browser success message or payment screenshot as proof of payment. Never store card numbers or CVVs.
-
-Wallet balances in this starter are internal platform credits, not bank deposits, e-money or withdrawable cash. Do not advertise cash redemption unless the product has been redesigned and reviewed for the relevant financial, consumer-protection and payment rules.
-
-## Before public launch
-
-- Add email verification and secure password-reset delivery.
-- Add admin multi-factor authentication and restrict admin access.
-- Add production media storage/CDN, file scanning and content moderation.
-- Publish privacy policy, terms, community rules and data-retention information.
-- Tune rate limits, spam protection, abuse reporting and moderation staffing.
-- Set up monitoring, error alerts, backups, restore drills and load testing.
-- Have the code and payment flows independently security-reviewed.
-
-
-## Voice messaging and voice calls
-
-CHATHSI includes browser-based voice notes and one-to-one voice calling for all account tiers.
-
-- Voice notes use the browser `MediaRecorder` API and are uploaded to the private voice directory on the persistent Render disk.
-- Voice note playback is served through an authenticated endpoint that checks that the signed-in user is a sender or recipient of that message.
-- Voice calls use WebRTC for audio and Socket.IO for authenticated call signalling. Microphone access requires HTTPS and user permission.
-- The default public STUN server helps peers discover network routes, but STUN-only calling is not reliable on every carrier-grade NAT, restrictive Wi-Fi or mobile network. For production reliability, configure a TURN service using `TURN_URL`, `TURN_USERNAME`, and `TURN_CREDENTIAL`. TURN may have a separate cost.
-
-### Render disk paths
-
-Mount the persistent disk at `/var/data/chathsi` and set:
+- Voice messages use browser `MediaRecorder`, are uploaded to `VOICE_DIR`, and are served through an authenticated route that verifies the requester is a sender or recipient.
+- Voice and video calls use WebRTC peer-to-peer media. Socket.IO carries authenticated call signalling only; audio/video is not recorded or stored by CHATHSI.
+- Incoming and outgoing call tones are generated in the browser. Browser audio policies may require the user to interact with the site before sound can play.
+- Microphone and camera permissions are required. Calls need HTTPS in production (localhost is permitted for local development).
+- The default public STUN server may work for some network combinations but is not sufficient for every carrier/router. Configure a TURN provider in Render Environment for better reliability:
 
 ```env
-DATABASE_PATH=/var/data/chathsi/chathsi.db
-UPLOAD_DIR=/var/data/chathsi/uploads
-VOICE_DIR=/var/data/chathsi/voice-private
+TURN_URL=turn:your-turn-host:3478
+TURN_USERNAME=your-turn-username
+TURN_CREDENTIAL=your-turn-secret
 ```
 
-Set `MAX_VOICE_MB=12` (or a suitable limit) to control voice-note upload size. Voice-note media is private; do not expose the `VOICE_DIR` as a static directory.
+Use provider-issued credentials, preferably short-lived. Never commit TURN credentials to GitHub. TURN relay usage may cost money. Test on actual mobile networks and browsers; do not assume every network supports direct peer-to-peer connections.
 
-### Voice feature checks before launch
+## Wallet rules included in this starter
 
-1. Use HTTPS and grant microphone permission in the browser.
-2. Test voice-note recording, cancellation, upload, playback, and access denial for a non-participant.
-3. Test calls between two accounts on different networks and devices.
-4. Configure and test TURN before relying on calls for public production use.
-5. Test call rejection, hang-up, microphone mute, blocked-user restrictions, and reconnect behaviour.
+1. Gift conversion is 100% of the gift's configured NGN face value.
+2. Every top-up request requires administrator approval.
+3. Every gift transfer requires administrator approval.
+4. Only administrators can issue free gifts.
+5. Wallet credits are internal CHATHSI platform credits, not withdrawable cash.
+6. Card payment is not automatically verified in this starter. Do not credit card requests until a real payment provider and signed server-side webhook verification are integrated.
+
+## Checks
+
+Run:
+
+```bash
+npm run check
+```
+
+This performs JavaScript syntax checks on the server, storage layer, models and browser application. It is not a substitute for two-account browser testing, microphone/camera permission testing, network/TURN testing or a production security review.
+
+---
+
+**BUILT BY JOSSY STUDIOS**
+
+## Latest social/chat additions (v1.3.0)
+- Live online/offline status via authenticated Socket.IO presence.
+- Incoming/outgoing call tones and one-to-one audio/video WebRTC calls.
+- Sticker picker in private and group chats.
+- Friend requests with accept/decline and a friends list under Explore.
+- Private chat streaks based on distinct UTC days with messages.
+
+See `FRIENDS_STICKERS_STREAKS.md` and `REALTIME_CALLING_PRESENCE.md` for behavior and deployment caveats.
+
+## Advertising
+
+CHATHSI includes an advertiser submission page and admin approval workflow. Campaigns remain pending until an administrator confirms payment and approves the creative. Sponsored posts are labelled and reportable. See `ADVERTISING_SYSTEM.md` for the current scope and important billing limitations. No automated payment gateway, CPM/CPC billing, or sensitive-interest ad targeting is enabled.
+
+## Important deployment note
+
+The default SQLite database and uploaded media are stored on the service filesystem. On hosts with ephemeral filesystems, they can be lost during restarts or redeploys. Use persistent storage or a managed database/object store before treating this as a production social network or storing real wallet balances.
