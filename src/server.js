@@ -251,7 +251,29 @@ app.post('/api/stories', auth, upload.single('media'), async (req, res) => {
   res.status(201).json({ story });
 });
 
-// Messages
+// Conversations: return one row per person the signed-in user has chatted with.
+// The counterpart is always the OTHER participant, never the message sender by default.
+app.get('/api/conversations', auth, async (req, res) => {
+  const meId = String(req.user._id);
+  const all = await M.Message.find({ $or: [{ sender: req.user._id }, { recipient: req.user._id }] }).sort({ createdAt: -1 }).limit(1000);
+  const byUser = new Map();
+  for (const message of all) {
+    const senderId = String(message.sender);
+    const recipientId = String(message.recipient);
+    const otherId = senderId === meId ? recipientId : senderId;
+    if (!otherId || otherId === meId || byUser.has(otherId)) continue;
+    const other = await M.User.findById(otherId);
+    if (!other || other.isSuspended) continue;
+    const unread = await M.Message.countDocuments({ conversationKey: convoKey(meId, otherId), recipient: req.user._id, readAt: null });
+    byUser.set(otherId, {
+      user: safeUser(other),
+      lastMessage: { text: message.text || '', audioUrl: message.audioUrl || '', createdAt: message.createdAt, senderId },
+      unread
+    });
+  }
+  res.json({ conversations: [...byUser.values()] });
+});
+
 app.get('/api/messages/:userId', auth, async (req, res) => {
   const other = await M.User.findById(req.params.userId);
   if (!other) return res.status(404).json({ error: 'User not found.' });
