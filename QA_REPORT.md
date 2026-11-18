@@ -1,21 +1,19 @@
-# CHATHSI Ultimate Build — QA Report
+# CHATHSI Ultimate QA report
 
-## Source package
-Built from the latest available social-features archive. The package includes the previously implemented social feed, stories, private/group messaging, friends, stickers, chat streaks, presence, audio/video calling, wallet/gifts, admin appearance controls and moderation, with the new advertiser workflow described in `ADVERTISING_SYSTEM.md`.
+## Static checks performed in this build
+- `node --check src/server.js` — passed
+- `node --check src/sqlite-store.js` — passed
+- `node --check src/models.js` — passed
+- `node --check public/app.js` — passed
+- Verified multipart profile updates use HTTP PATCH (matching `/api/me`).
+- Verified progress UI is wired to XHR upload progress for profile pictures, feed posts/videos, stories, and advertiser media.
+- Verified admin navigation is exposed only to admin-role accounts in desktop and mobile navigation, and `/admin` loads the admin page after authentication.
 
-## Automated checks performed in this build
-- `npm run check` executed three times after the final edits.
-- The check script validates JavaScript syntax for `src/server.js`, `src/sqlite-store.js`, `src/models.js`, and `public/app.js`.
-- ZIP archive integrity (`unzip -t`) was checked after packaging.
-- Source was reviewed for the new advertiser model registration, campaign submission validation, admin review routes, sponsored feed rendering, impression/click counters, and advert reporting.
+## Not performed
+- No live Render deployment, browser end-to-end test, camera test, or persistent-database test was performed in this environment.
+- Upload success still depends on correct Render environment variables, available disk space, network quality, and the deployed build being updated.
 
-## Not tested in this environment
-- Dependencies are not installed in this build workspace, so no live SQLite/server integration test was run.
-- No two-account browser test, camera/microphone hardware test, external-network WebRTC test, or live Render deployment test was run.
-- Syntax checks are not a guarantee that every runtime or hosting issue is absent.
-
-## Important limitations
-- Advertising payment is manually verified by an administrator. There is no payment gateway, automatic billing, CPC/CPM charge calculation, or automatic budget deduction.
-- Video calls require HTTPS, camera/microphone permission, and a working ICE route. TURN may be required on restrictive networks.
-- The Render Free ephemeral filesystem can lose SQLite data and uploaded media on restart/redeploy. Use persistent storage and backups before real production use.
-- Presence is process-local and resets when the server restarts; multi-instance hosting requires shared presence and a Socket.IO adapter.
+## Upload defaults
+- Profile images: 12 MB (`MAX_IMAGE_MB`)
+- Post/story/ad media: 50 MB (`MAX_MEDIA_MB`)
+- Voice messages: 12 MB (`MAX_VOICE_MB`)

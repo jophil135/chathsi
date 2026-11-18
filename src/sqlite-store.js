@@ -59,6 +59,7 @@ function matchValue(actual, expected) {
     if(op==='$gt') return actual!=null && (actual instanceof Date || val instanceof Date ? new Date(actual)>new Date(val) : actual>val);
     if(op==='$gte') return actual!=null && actual>=val;
     if(op==='$lt') return actual!=null && actual<val;
+    if(op==='$lte') return actual!=null && actual<=val;
     if(op==='$in') return val.some(x=>eq(actual,x));
     if(op==='$exists') return val ? actual!==undefined : actual===undefined;
     return false;
@@ -210,5 +211,6 @@ exported.atomicPurchaseGift=atomicPurchaseGift;
 exported.atomicCreateGiftTransfer=atomicCreateGiftTransfer;
 exported.atomicReviewTopup=atomicReviewTopup;
 exported.atomicReviewGiftTransfer=atomicReviewGiftTransfer;
+exported.exportSnapshot=async()=>({format:'chathis-jsonb-snapshot-v1',exportedAt:now(),documents:db.prepare('SELECT collection,id,data,created_at,updated_at FROM documents ORDER BY collection,id').all().map(r=>({collection:r.collection,id:r.id,data:JSON.parse(r.data),created_at:r.created_at,updated_at:r.updated_at}))});
 exported.close=()=>db.close();
 module.exports=exported;

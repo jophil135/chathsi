@@ -76,3 +76,38 @@ body[data-theme="dark"] .story-chip,body[data-theme="midnight"] .story-chip{colo
 
 /* Sponsored placements */
 .sponsored-card{border:1px solid rgba(40,120,240,.28);position:relative}.sponsored-card .pill{background:#eaf1ff;color:#245fbd}
+
+/* Upload feedback: visible progress for large photos and videos */
+.upload-progress{margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:11px;background:var(--surface,#fff)}
+.upload-progress.hidden{display:none}
+.upload-progress-label{display:flex;justify-content:space-between;gap:12px;font-size:12px;color:var(--ink);margin-bottom:7px}
+.upload-progress-track{height:8px;border-radius:99px;background:#e8eef7;overflow:hidden}
+.upload-progress-track span{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--blue),var(--blue2));transition:width .15s ease}
+.mobile-nav #adminMobileNav{font-size:18px}.mobile-nav #adminMobileNav.hidden{display:none}
+
+
+/* CHATHIS responsive polish: independently scrollable comment threads, stable chat composer and premium finish. */
+.comments,.comments-list,.post-comments{max-height:min(38vh,320px);overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding-right:5px}
+.comment-thread{max-height:320px;overflow-y:auto;overscroll-behavior:contain}
+.chat-messages{overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;min-height:180px;max-height:min(58vh,560px)}
+.chat-send{position:relative;z-index:1;background:var(--surface);align-items:center;flex-wrap:wrap}
+.chat-send input{min-width:0;flex:1 1 160px}
+.premium-plan,.premium-mini{background:linear-gradient(145deg,#101114 0%,#26221a 55%,#111 100%);border:1px solid #c7a34b;color:#f7e8bd;box-shadow:0 12px 34px #0b0b0b20}
+.premium-plan h3,.premium-plan .premium-price,.premium-mini b{color:#f5d889}
+.premium-plan li,.premium-mini p{color:#e2d5b4}
+.premium-btn{background:linear-gradient(100deg,#9c7728,#f0d47f,#9b7425);color:#17130a}
+.story-strip,.chat-users{scrollbar-width:thin;overscroll-behavior-x:contain}
+button,.card,.bubble,.story-chip,.premium-plan{transition:background-color .2s ease,border-color .2s ease,box-shadow .2s ease,transform .2s ease}
+@media(max-width:760px){.main{min-width:0}.chat-layout,.chat-window{min-width:0}.chat-messages{max-height:52vh;height: min(52vh,430px)}.comment-thread,.comments,.comments-list,.post-comments{max-height:34vh}.chat-send{gap:6px}.chat-send input{flex:1 1 100%}.chat-send button,.chat-send label{flex:1 1 auto}.premium-plan{padding:15px}.story-view-media{max-height:58vh}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+
+
+/* CHATHIS story viewer refinement: immersive layout with responsive media and accessible navigation. */
+.modal-box:has(.story-viewer){width:min(100%,760px);padding:18px;background:#07152d;color:#fff;border:1px solid #29466d;box-shadow:0 28px 90px #020916aa}
+.modal-box:has(.story-viewer) .modal-close{background:#ffffff20;color:#fff}
+.story-viewer{min-height:min(72vh,760px);grid-template-rows:auto minmax(240px,1fr) auto auto;gap:14px}
+.story-view-head{color:#fff}.story-view-head span{color:#b8c9e1}
+.story-view-media{width:100%;height:min(62vh,620px);max-height:none;object-fit:contain;border-radius:14px;background:#020812}
+.story-view-caption{color:#f4f7fc;max-height:90px;overflow:auto}
+.story-view-actions button{min-width:110px}
+@media(max-width:600px){.modal:has(.story-viewer){padding:0}.modal-box:has(.story-viewer){width:100%;height:100%;max-height:100dvh;border-radius:0;padding:16px 14px 90px;display:flex;flex-direction:column;justify-content:center}.story-viewer{min-height:0;flex:1;grid-template-rows:auto minmax(0,1fr) auto auto}.story-view-media{height:100%;max-height:65dvh}.story-view-actions button{flex:1}}

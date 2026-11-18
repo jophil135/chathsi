@@ -1,3 +1,5 @@
+> **Build note:** See [ULTIMATE_BUILD_STATUS.md](./ULTIMATE_BUILD_STATUS.md) for exact implemented changes and outstanding production blockers. This version still uses SQLite.
+
 # CHATHSI — Real-time Social Platform
 
 A responsive social-network starter built with Node.js, Express, SQLite, Socket.IO and vanilla HTML/CSS/JavaScript. Main brand colour: blue; premium styling: purple and gold. Footer credit: **BUILT BY JOSSY STUDIOS**.
@@ -161,3 +163,45 @@ CHATHSI includes an advertiser submission page and admin approval workflow. Camp
 ## Important deployment note
 
 The default SQLite database and uploaded media are stored on the service filesystem. On hosts with ephemeral filesystems, they can be lost during restarts or redeploys. Use persistent storage or a managed database/object store before treating this as a production social network or storing real wallet balances.
+
+## Admin dashboard and media uploads
+- After signing in with an account whose role is `admin`, choose **Admin panel** in the desktop sidebar or **Admin** in the mobile navigation.
+- Direct dashboard URL: `/admin` (for example, `https://your-domain.onrender.com/admin`). You must already be signed in as an administrator.
+- Profile pictures accept JPG/JPEG, PNG, GIF and WEBP up to 12 MB by default. The profile form uses a PATCH multipart upload and displays upload progress.
+- Photo/video posts and stories display a live percentage progress bar while the browser sends the file. The media upload limit remains 50 MB by default (`MAX_MEDIA_MB`).
+- If a profile picture still fails, check the browser's Network response and Render logs for the returned upload error. Render's temporary filesystem can also discard uploaded files after restarts unless persistent storage is configured.
+
+## CockroachDB setup and SQLite data migration
+
+This build uses CockroachDB through the PostgreSQL wire protocol and the `pg` driver when `DB_DRIVER=cockroach`. The old SQLite adapter remains available during the staged export phase with `DB_DRIVER=sqlite`. CockroachDB schema setup runs at startup; multi-statement wallet/gift operations use SERIALIZABLE transactions and retry SQLSTATE `40001` with bounded backoff.
+
+### Configure CockroachDB
+
+1. Create a CockroachDB cluster and database.
+2. Copy the PostgreSQL connection string from the cluster's connection details. It should include the host, port, database, username, password, and TLS mode.
+3. Add it to Render as `DATABASE_URL`, but keep `DB_DRIVER=sqlite` until the export has been imported. Never commit the connection string to GitHub.
+4. If your provider gives you a CA certificate, set `DATABASE_CA_CERT` in Render to the certificate contents. TLS verification is enabled by default; do not disable it in production.
+5. After the snapshot import succeeds, change Render `DB_DRIVER` to `cockroach` and deploy. Startup creates the `documents` JSONB table and indexes, then seeds the administrator and default settings only when they do not already exist.
+
+### Export/import existing data
+
+Deploy this build first with `DB_DRIVER=sqlite` so it continues using the SQLite adapter. The old SQLite deployment can then export a JSON snapshot using the admin-only endpoint `GET /api/admin/database-export`. Sign in as an administrator in the same browser and open `/api/admin/database-export`; keep the downloaded file private because it contains account records and password hashes.
+
+To import the snapshot into a new CockroachDB database, on a trusted computer:
+
+1. Install Node.js 22 and download the project source.
+2. Run `npm install`.
+3. Put `DATABASE_URL=your-full-connection-string` in a local `.env` file (do not commit it).
+4. Run `node scripts/import-snapshot.js path/to/chathis-database-export.json`.
+5. Confirm the import count, then set the same `DATABASE_URL` in Render and deploy the CockroachDB version.
+6. Keep the export file private and delete it securely after verifying the migration. Only then switch `DB_DRIVER` to `cockroach` in Render and redeploy.
+
+**Important storage limitation:** the previous Render configuration used `/tmp/chathsi.db`, which is ephemeral. Render may discard files in `/tmp` when a service restarts or redeploys. If the old SQLite file is no longer present, this application cannot recover those records from CockroachDB; use an existing backup if you have one. Do not assume that deploying this update will preserve a `/tmp` database.
+
+### Database utilities
+
+- `npm run check` checks JavaScript syntax.
+- `npm run db:check` verifies the configured CockroachDB connection and prints database/version details.
+- `npm run db:import -- path/to/chathis-database-export.json` imports an admin-exported snapshot. Existing document IDs are not overwritten.
+
+The JSONB document adapter preserves the existing model API while moving storage to CockroachDB. It currently filters model queries in application memory, so this is a compatibility migration rather than a final high-scale relational schema. Add collection-specific SQL indexes and query methods as usage grows.

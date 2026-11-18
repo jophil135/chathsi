@@ -42,7 +42,7 @@ const storage = multer.diskStorage({
 });
 const imageUpload = multer({
   storage,
-  limits: { fileSize: (Number(process.env.MAX_IMAGE_MB) || 8) * 1024 * 1024 },
+  limits: { fileSize: (Number(process.env.MAX_IMAGE_MB) || 12) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (!/^image\/(jpeg|png|gif|webp)$/.test(file.mimetype)) return cb(new Error('Choose a JPG, PNG, GIF or WEBP image.'));
     cb(null, true);
@@ -90,6 +90,17 @@ const auth = async (req, res, next) => {
   } catch { return res.status(401).json({ error: 'Your session has expired. Please log in again.' }); }
 };
 const admin = (req, res, next) => req.user?.role === 'admin' ? next() : res.status(403).json({ error: 'Administrator access required.' });
+// Admin-only one-time export for moving the current SQLite data into CockroachDB.
+app.get('/api/admin/database-export', auth, admin, async (_req, res, next) => {
+  try {
+    if (typeof M.exportSnapshot !== 'function') return res.status(501).json({ error: 'Database export is unavailable.' });
+    const snapshot = await M.exportSnapshot();
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', 'attachment; filename=chathis-database-export.json');
+    res.send(JSON.stringify(snapshot));
+  } catch (err) { next(err); }
+});
 const notify = async (user, actor, type, text, link = '') => {
   if (!user || String(user) === String(actor)) return;
   const n = await M.Notification.create({ user, actor, type, text, link });
@@ -119,9 +130,12 @@ async function seed() {
       { key: 'plus', name: 'CHATHSI Plus', price: 2500, benefits: ['Premium badge', 'Profile themes', 'Creator analytics'] },
       { key: 'pro', name: 'CHATHSI Pro', price: 5000, benefits: ['Everything in Plus', 'Advanced creator tools', 'Priority support'] }
     ]],
-    ['platform', { name: 'CHATHSI', tagline: 'Connect. Express. Belong.', allowRegistration: true }]
+    ['platform', { name: 'CHATHIS', tagline: 'Connect. Express. Belong.', allowRegistration: true }]
   ];
-  for (const [key, value] of defaults) await M.Setting.updateOne({ key }, { $setOnInsert: { key, value } }, { upsert: true });
+  for (const [key, value] of defaults) {
+    await M.Setting.updateOne({ key }, { $setOnInsert: { key, value } }, { upsert: true });
+    if (key === 'platform') { const saved = await M.Setting.findOne({ key }); if (saved?.value?.name === 'CHATHSI') { saved.value = { ...saved.value, name: 'CHATHIS' }; await saved.save(); } }
+  }
   const gifts = [
     ['Rose', 'A little appreciation', '🌹', 100],
     ['Diamond', 'A sparkling thank-you', '💎', 500],
@@ -132,7 +146,7 @@ async function seed() {
     await M.Gift.updateOne({ name }, { $setOnInsert: { name, description, emoji, value, active: true } }, { upsert: true });
 }
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'CHATHSI API' }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'CHATHIS API' }));
 app.get('/api/voice/:filename', auth, async (req, res) => {
   const filename = path.basename(req.params.filename);
   const audioUrl = `/api/voice/${filename}`;
@@ -541,7 +555,7 @@ app.post('/api/wallet/topups', auth, async (req, res) => {
 });
 app.post('/api/wallet/buy-gift', auth, async (req, res) => {
   const quantity = Math.max(1, Math.min(20, Math.floor(Number(req.body.quantity) || 1)));
-  const result = M.atomicPurchaseGift(req.user._id, req.body.giftId, quantity);
+  const result = await M.atomicPurchaseGift(req.user._id, req.body.giftId, quantity);
   if (result.error) return res.status(400).json({ error: result.error });
   res.status(201).json({ items: result.items, balance: result.user.walletBalance });
 });
@@ -550,7 +564,7 @@ app.post('/api/wallet/gift-transfer', auth, async (req, res) => {
   if (!recipient || String(recipient._id) === String(req.user._id)) return res.status(404).json({ error: 'Enter a valid recipient username.' });
   if (req.user.blockedUsers.some(id => String(id) === String(recipient._id)) || recipient.blockedUsers.some(id => String(id) === String(req.user._id)))
     return res.status(403).json({ error: 'This transfer is unavailable.' });
-  const result = M.atomicCreateGiftTransfer(req.user._id, recipient._id, req.body.giftItemId);
+  const result = await M.atomicCreateGiftTransfer(req.user._id, recipient._id, req.body.giftItemId);
   if (result.error) return res.status(409).json({ error: result.error });
   await notify(recipient._id, req.user._id, 'gift_pending', `${req.user.username} requested to send you a gift. It is awaiting admin approval.`);
   res.status(201).json({ transfer: result.transfer, message: 'Gift transfer submitted for admin approval.' });
@@ -604,7 +618,7 @@ app.get('/api/admin/topups', auth, admin, async (_req, res) => res.json({ topups
 app.post('/api/admin/topups/:id/review', auth, admin, async (req, res) => {
   const status = req.body.status;
   if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ error: 'Choose approve or reject.' });
-  const result = M.atomicReviewTopup(req.params.id, req.user._id, status, req.body.note);
+  const result = await M.atomicReviewTopup(req.params.id, req.user._id, status, req.body.note);
   if (result.error) return res.status(409).json({ error: result.error });
   const topup = await M.Topup.findById(req.params.id);
   if (status === 'approved') await notify(result.user, req.user._id, 'topup_approved', `Your ₦${topup.amount.toLocaleString()} top-up was approved.`);
@@ -615,7 +629,7 @@ app.get('/api/admin/transfers', auth, admin, async (_req, res) => res.json({ tra
 app.post('/api/admin/transfers/:id/review', auth, admin, async (req, res) => {
   const status = req.body.status;
   if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ error: 'Choose approve or reject.' });
-  const result = M.atomicReviewGiftTransfer(req.params.id, req.user._id, status, req.body.note);
+  const result = await M.atomicReviewGiftTransfer(req.params.id, req.user._id, status, req.body.note);
   if (result.error) return res.status(409).json({ error: result.error });
   const transfer = await M.GiftTransfer.findById(req.params.id);
   if (status === 'approved') await notify(result.recipient, req.user._id, 'gift_received', `Your gift transfer was approved. ₦${Number(result.value).toLocaleString()} CHATHSI credits were added.`);
@@ -663,6 +677,15 @@ app.patch('/api/admin/payment-methods', auth, admin, async (req, res) => {
   await M.Setting.updateOne({ key: 'paymentMethods' }, { $set: { value: next } }, { upsert: true });
   await audit(req.user._id, 'payment_methods_updated', 'setting', 'paymentMethods', JSON.stringify(next));
   res.json({ paymentMethods: next });
+});
+app.patch('/api/admin/platform', auth, admin, async (req, res) => {
+  const current = (await M.Setting.findOne({ key: 'platform' }))?.value || {};
+  const name = String(req.body.name || '').trim().replace(/\s+/g, ' ').slice(0, 32);
+  if (!name || !/^[a-zA-Z0-9][a-zA-Z0-9 ._-]*$/.test(name)) return res.status(400).json({ error: 'Enter an app name of 1–32 letters, numbers, spaces, dots, underscores or hyphens.' });
+  const next = { ...current, name };
+  await M.Setting.updateOne({ key: 'platform' }, { $set: { value: next } }, { upsert: true });
+  await audit(req.user._id, 'platform_name_updated', 'setting', 'platform', name);
+  res.json({ platform: next });
 });
 app.patch('/api/admin/appearance', auth, admin, async (req, res) => {
   const hex = value => /^#[0-9a-fA-F]{6}$/.test(String(value || '')) ? String(value) : null;
@@ -769,12 +792,13 @@ io.on('connection', async socket => {
 
 app.use((err, _req, res, _next) => {
   console.error(err);
-  const status = err instanceof multer.MulterError ? 400 : 500;
-  res.status(status).json({ error: err.message || 'Server error.' });
+  const status = err instanceof multer.MulterError || err.message?.startsWith('Choose an image') || err.message?.startsWith('Upload an image') ? 400 : 500;
+  const message = err.code === 'LIMIT_FILE_SIZE' ? 'File is too large. Check the upload limit and try a smaller file.' : (err.message || 'Server error.');
+  res.status(status).json({ error: message });
 });
 app.get('*', (_req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
 
 (async () => {
-  try { await seed(); server.listen(PORT, () => console.log(`CHATHSI running on ${PORT} using SQLite at ${process.env.DATABASE_PATH || 'data/chathsi.db'}`)); }
+  try { if (typeof M.init === 'function') await M.init(); await seed(); server.listen(PORT, () => console.log(`CHATHIS running on ${PORT} using ${String(process.env.DB_DRIVER || (process.env.DATABASE_URL ? 'cockroach' : 'sqlite')).toLowerCase() === 'cockroach' ? 'CockroachDB' : `SQLite at ${process.env.DATABASE_PATH || 'data/chathsi.db'}`}`)); }
   catch (err) { console.error('CHATHSI startup failed:', err); process.exit(1); }
 })();
