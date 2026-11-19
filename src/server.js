@@ -51,7 +51,7 @@ const localStorage = multer.diskStorage({
 const cloudStorage = {
   _handleFile(_req, file, cb) {
     const folder = process.env.CLOUDINARY_MEDIA_FOLDER || 'chathis';
-    const resourceType = file.mimetype.startsWith('video/') ? 'video' : 'image';
+    const resourceType = (file.mimetype.startsWith('video/') || file.mimetype.startsWith('audio/')) ? 'video' : 'image';
     const stream = cloudinary.uploader.upload_stream({ folder, resource_type: resourceType, use_filename: false, unique_filename: true }, (error, result) => {
       if (error) return cb(error);
       cb(null, { path: result.secure_url, filename: result.public_id, public_id: result.public_id, cloudinaryResourceType: resourceType, size: result.bytes, format: result.format });
@@ -87,6 +87,14 @@ const voiceStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, voiceDir),
   filename: (_req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${path.extname(file.originalname).toLowerCase() || '.webm'}`)
 });
+const audioUpload = multer({
+  storage: mediaStorage,
+  limits: { fileSize: (Number(process.env.MAX_SONG_MB) || 30) * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    if (!/^audio\/(mpeg|mp3|wav|ogg|opus|aac|mp4|x-m4a|flac|webm)/.test(file.mimetype)) return cb(new Error('Upload an MP3, WAV, OGG, AAC, M4A, FLAC or WEBM audio file.'));
+    cb(null, true);
+  }
+});
 const voiceUpload = multer({
   storage: voiceStorage,
   limits: { fileSize: (Number(process.env.MAX_VOICE_MB) || 12) * 1024 * 1024 },
@@ -99,7 +107,7 @@ const voiceUpload = multer({
 const safeUser = u => ({
   id: u._id, username: u.username, email: u.email, displayName: u.displayName,
   bio: u.bio, avatar: u.avatar, role: u.role, premium: u.premium,
-  premiumUntil: u.premiumUntil, walletBalance: u.walletBalance,
+  premiumUntil: u.premiumUntil, walletBalance: u.walletBalance, withdrawableBalance: Number(u.withdrawableBalance || 0),
   followersCount: u.followers?.length || 0, followingCount: u.following?.length || 0,
   createdAt: u.createdAt, isOnline: (onlineUsers.get(String(u._id))?.size || 0) > 0
 });
@@ -143,14 +151,20 @@ async function seed() {
     const existing = await M.User.findOne({ email });
     if (!existing) {
       const passwordHash = await bcrypt.hash(password, 12);
-      await M.User.create({ username: process.env.ADMIN_USERNAME || 'chathsi_admin', email, passwordHash, displayName: 'CHATHSI Admin', role: 'admin' });
+      await M.User.create({ username: process.env.ADMIN_USERNAME || 'chathsi_admin', email, passwordHash, displayName: 'CHATHIS Admin', role: 'admin' });
       console.log(`Initial admin created: ${email}`);
+    } else if (existing.role !== 'admin') {
+      // The configured ADMIN_EMAIL is authoritative. Promote that exact account
+      // so a previously registered admin email does not remain a normal user.
+      existing.role = 'admin';
+      await existing.save();
+      console.log(`Configured admin account promoted: ${email}`);
     }
   } else {
     console.warn('Admin seed skipped. Set ADMIN_EMAIL and a strong non-example ADMIN_PASSWORD.');
   }
   const defaults = [
-    ['paymentMethods', { bankTransfer: true, card: true, bankInstructions: 'Admin will provide verified bank transfer instructions here.' }],
+    ['paymentMethods', { bankTransfer: true, card: true, bankInstructions: 'Admin will provide verified bank transfer instructions here.', companyBankName: '', companyAccountName: '', companyAccountNumber: '' }],
     ['premiumPlans', [
       { key: 'plus', name: 'CHATHSI Plus', price: 2500, benefits: ['Premium badge', 'Profile themes', 'Creator analytics'] },
       { key: 'pro', name: 'CHATHSI Pro', price: 5000, benefits: ['Everything in Plus', 'Advanced creator tools', 'Priority support'] }
@@ -184,8 +198,27 @@ app.get('/api/config', async (_req, res) => {
   const plans = await M.Setting.findOne({ key: 'premiumPlans' }).lean();
   const platform = await M.Setting.findOne({ key: 'platform' }).lean();
   const appearance = await M.Setting.findOne({ key: 'appearance' }).lean();
+  // WebRTC ICE configuration. TURN_URLS accepts either a JSON array or a
+  // comma-separated list. TURN_URL remains supported for older deployments.
   const iceServers = [{ urls: process.env.STUN_URL || 'stun:stun.l.google.com:19302' }];
-  if (process.env.TURN_URL && process.env.TURN_USERNAME && process.env.TURN_CREDENTIAL) iceServers.push({ urls: process.env.TURN_URL, username: process.env.TURN_USERNAME, credential: process.env.TURN_CREDENTIAL });
+  const turnUsername = process.env.TURN_USERNAME;
+  const turnCredential = process.env.TURN_CREDENTIAL;
+  if (turnUsername && turnCredential) {
+    let turnUrls = [];
+    const configuredTurnUrls = process.env.TURN_URLS;
+    if (configuredTurnUrls) {
+      try {
+        const parsed = JSON.parse(configuredTurnUrls);
+        turnUrls = Array.isArray(parsed) ? parsed : [parsed];
+      } catch {
+        turnUrls = configuredTurnUrls.split(',');
+      }
+    } else if (process.env.TURN_URL) {
+      turnUrls = [process.env.TURN_URL];
+    }
+    turnUrls = [...new Set(turnUrls.map(url => String(url).trim()).filter(url => /^(turn|turns):/i.test(url)))];
+    if (turnUrls.length) iceServers.push({ urls: turnUrls, username: turnUsername, credential: turnCredential });
+  }
   res.json({ paymentMethods: methods?.value || {}, premiumPlans: plans?.value || [], platform: platform?.value || {}, appearance: appearance?.value || { primary:'#2878f0', secondary:'#4c9bff', background:'#f5f8fc', surface:'#ffffff', text:'#15233b', mode:'light', decoration:'none', eventLabel:'' }, rtc: { iceServers } });
 });
 
@@ -302,7 +335,8 @@ app.post('/api/users/:id/block', auth, async (req, res) => {
 app.get('/api/posts', auth, async (req, res) => {
   const posts = await M.Post.find({ isRemoved: false }).sort({ createdAt: -1 }).limit(60)
     .populate('author', 'username displayName avatar premium')
-    .populate('comments.author', 'username displayName avatar');
+    .populate('comments.author', 'username displayName avatar')
+    .populate('comments.replies.author', 'username displayName avatar');
   res.json({ posts });
 });
 app.post('/api/posts', auth, mediaUpload.single('media'), async (req, res) => {
@@ -334,11 +368,27 @@ app.post('/api/posts/:id/comments', auth, async (req, res) => {
   if (!text || text.length > 1000) return res.status(400).json({ error: 'Comment must be 1–1000 characters.' });
   const post = await M.Post.findById(req.params.id);
   if (!post || post.isRemoved) return res.status(404).json({ error: 'Post not found.' });
-  post.comments.push({ author: req.user._id, text }); await post.save();
+  post.comments.push({ _id: makeRef('comment'), author: req.user._id, text, replies: [], createdAt: new Date().toISOString() }); await post.save();
   await notify(post.author, req.user._id, 'comment', `${req.user.username} commented on your post.`, `post:${post._id}`);
   await post.populate('comments.author', 'username displayName avatar');
+  await post.populate('comments.replies.author', 'username displayName avatar');
   io.except(`user:${req.user._id}`).emit('feed:refresh', { type: 'post-commented', postId: String(post._id) });
   res.status(201).json({ comments: post.comments });
+});
+app.post('/api/posts/:id/comments/:commentId/replies', auth, async (req, res) => {
+  const text = String(req.body.text || '').trim().slice(0, 1000);
+  if (!text) return res.status(400).json({ error: 'Write a reply first.' });
+  const post = await M.Post.findById(req.params.id);
+  if (!post || post.isRemoved) return res.status(404).json({ error: 'Post not found.' });
+  const legacyIndex = String(req.params.commentId).startsWith('legacy-') ? Number(String(req.params.commentId).slice(7)) : -1;
+  const comment = (post.comments || []).find((c, i) => String(c._id || c.id || `legacy-${i}`) === String(req.params.commentId));
+  if (!comment) return res.status(404).json({ error: 'Comment not found.' });
+  if (!Array.isArray(comment.replies)) comment.replies = [];
+  comment.replies.push({ _id: makeRef('reply'), author: req.user._id, text, createdAt: new Date().toISOString() });
+  await post.save();
+  await notify(post.author, req.user._id, 'comment_reply', `${req.user.username} replied to a comment on your post.`, `post:${post._id}`);
+  io.except(`user:${req.user._id}`).emit('feed:refresh', { type: 'post-replied', postId: String(post._id) });
+  res.status(201).json({ replies: comment.replies });
 });
 app.post('/api/posts/:id/report', auth, async (req, res) => {
   const reason = String(req.body.reason || '').trim();
@@ -553,15 +603,38 @@ app.post('/api/notifications/read', auth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Community music library. Uploaders retain ownership of their own tracks.
+app.get('/api/songs', auth, async (_req, res) => {
+  const songs = await M.Song.find({ status: 'published' }).sort({ createdAt: -1 }).limit(150).populate('uploader', 'username displayName avatar');
+  res.json({ songs });
+});
+app.post('/api/songs', auth, audioUpload.single('audio'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'Choose an audio file to upload.' });
+  const title = String(req.body.title || '').trim().slice(0, 100);
+  const artist = String(req.body.artist || '').trim().slice(0, 80);
+  if (!title) return res.status(400).json({ error: 'Enter a song title.' });
+  const audioUrl = req.file.path && req.file.path.startsWith('http') ? req.file.path : `/uploads/${req.file.filename}`;
+  const song = await M.Song.create({ uploader: req.user._id, title, artist, genre: String(req.body.genre || 'Other').slice(0, 40), audioUrl, mimeType: req.file.mimetype, fileSize: Number(req.file.size || 0), status: 'published' });
+  await song.populate('uploader', 'username displayName avatar');
+  res.status(201).json({ song });
+});
+app.delete('/api/songs/:id', auth, async (req, res) => {
+  const song = await M.Song.findById(req.params.id);
+  if (!song) return res.status(404).json({ error: 'Song not found.' });
+  if (String(song.uploader) !== String(req.user._id) && req.user.role !== 'admin') return res.status(403).json({ error: 'You can only remove your own uploads.' });
+  song.status = 'removed'; await song.save(); res.json({ ok: true });
+});
+
 // Wallet, top-ups and gift catalogue
 app.get('/api/wallet', auth, async (req, res) => {
-  const [items, ledger, topups, transfers] = await Promise.all([
+  const [items, ledger, topups, transfers, withdrawals] = await Promise.all([
     M.GiftItem.find({ owner: req.user._id }).populate('gift').sort({ createdAt: -1 }),
     M.Ledger.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(50),
     M.Topup.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(20),
-    M.GiftTransfer.find({ $or: [{ sender: req.user._id }, { recipient: req.user._id }] }).sort({ createdAt: -1 }).limit(20).populate('sender recipient', 'username')
+    M.GiftTransfer.find({ $or: [{ sender: req.user._id }, { recipient: req.user._id }] }).sort({ createdAt: -1 }).limit(20).populate('sender recipient', 'username'),
+    M.Withdrawal.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(20)
   ]);
-  res.json({ balance: req.user.walletBalance, gifts: items, ledger, topups, transfers });
+  res.json({ balance: req.user.walletBalance, withdrawableBalance: Number(req.user.withdrawableBalance || 0), gifts: items, ledger, topups, transfers, withdrawals });
 });
 app.get('/api/gifts', auth, async (_req, res) => res.json({ gifts: await M.Gift.find({ active: true }).sort({ value: 1 }) }));
 app.post('/api/wallet/topups', auth, async (req, res) => {
@@ -577,6 +650,17 @@ app.post('/api/wallet/topups', auth, async (req, res) => {
   const reference = makeRef('TOPUP');
   const topup = await M.Topup.create({ user: req.user._id, amount, method, reference, proofUrl: String(req.body.proofUrl || '').slice(0, 500) });
   res.status(201).json({ topup, message: 'Request submitted for administrator review. Your wallet has not been credited yet.' });
+});
+app.post('/api/wallet/withdrawals', auth, async (req, res) => {
+  const amount = Math.floor(Number(req.body.amount));
+  const accountNumber = String(req.body.accountNumber || '').replace(/\s/g, '');
+  const accountName = String(req.body.accountName || '').trim().slice(0, 100);
+  const bankName = String(req.body.bankName || '').trim().slice(0, 80);
+  if (!Number.isSafeInteger(amount) || amount < 100) return res.status(400).json({ error: 'Minimum withdrawal is ₦100.' });
+  if (!/^\d{10}$/.test(accountNumber) || !accountName || !bankName) return res.status(400).json({ error: 'Enter a valid 10-digit account number, account name and bank.' });
+  const result = await M.atomicCreateWithdrawal(req.user._id, amount, { accountNumber, accountName, bankName });
+  if (result.error) return res.status(409).json({ error: result.error });
+  res.status(201).json({ withdrawal: result.withdrawal, message: 'Withdrawal request sent to the admin for approval.' });
 });
 app.post('/api/wallet/buy-gift', auth, async (req, res) => {
   const quantity = Math.max(1, Math.min(20, Math.floor(Number(req.body.quantity) || 1)));
@@ -639,6 +723,17 @@ app.patch('/api/admin/users/:id', auth, admin, async (req, res) => {
   await user.save(); await audit(req.user._id, 'user_updated', 'user', user._id, `suspended=${user.isSuspended}; premium=${user.premium}`);
   res.json({ user: safeUser(user) });
 });
+app.get('/api/admin/withdrawals', auth, admin, async (_req, res) => res.json({ withdrawals: await M.Withdrawal.find().sort({ createdAt: -1 }).limit(200).populate('user', 'username email') }));
+app.post('/api/admin/withdrawals/:id/review', auth, admin, async (req, res) => {
+  const status = req.body.status;
+  if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ error: 'Choose approve or reject.' });
+  const result = await M.atomicReviewWithdrawal(req.params.id, req.user._id, status, req.body.note);
+  if (result.error) return res.status(409).json({ error: result.error });
+  await audit(req.user._id, `withdrawal_${status}`, 'withdrawal', req.params.id, result.withdrawal?.reference || '');
+  if (status === 'approved') await notify(result.user, req.user._id, 'withdrawal_approved', 'Your withdrawal request was approved.');
+  else await notify(result.user, req.user._id, 'withdrawal_rejected', 'Your withdrawal request was rejected and the amount was returned to your withdrawable balance.');
+  res.json({ withdrawal: result.withdrawal });
+});
 app.get('/api/admin/topups', auth, admin, async (_req, res) => res.json({ topups: await M.Topup.find().sort({ createdAt: -1 }).limit(200).populate('user', 'username email') }));
 app.post('/api/admin/topups/:id/review', auth, admin, async (req, res) => {
   const status = req.body.status;
@@ -697,7 +792,10 @@ app.patch('/api/admin/payment-methods', auth, admin, async (req, res) => {
   const next = {
     bankTransfer: typeof req.body.bankTransfer === 'boolean' ? req.body.bankTransfer : !!current.bankTransfer,
     card: typeof req.body.card === 'boolean' ? req.body.card : !!current.card,
-    bankInstructions: req.body.bankInstructions !== undefined ? String(req.body.bankInstructions).slice(0, 1000) : (current.bankInstructions || '')
+    bankInstructions: req.body.bankInstructions !== undefined ? String(req.body.bankInstructions).slice(0, 1000) : (current.bankInstructions || ''),
+    companyBankName: req.body.companyBankName !== undefined ? String(req.body.companyBankName).trim().slice(0, 80) : (current.companyBankName || ''),
+    companyAccountName: req.body.companyAccountName !== undefined ? String(req.body.companyAccountName).trim().slice(0, 100) : (current.companyAccountName || ''),
+    companyAccountNumber: req.body.companyAccountNumber !== undefined ? String(req.body.companyAccountNumber).replace(/\s/g, '').slice(0, 20) : (current.companyAccountNumber || '')
   };
   await M.Setting.updateOne({ key: 'paymentMethods' }, { $set: { value: next } }, { upsert: true });
   await audit(req.user._id, 'payment_methods_updated', 'setting', 'paymentMethods', JSON.stringify(next));

@@ -117,9 +117,10 @@ The included `render.yaml` is a Free-plan, temporary-storage blueprint example. 
 - The default public STUN server may work for some network combinations but is not sufficient for every carrier/router. Configure a TURN provider in Render Environment for better reliability:
 
 ```env
-TURN_URL=turn:your-turn-host:3478
-TURN_USERNAME=your-turn-username
-TURN_CREDENTIAL=your-turn-secret
+STUN_URL=stun:stun.relay.metered.ca:80
+TURN_URLS=turn:global.relay.metered.ca:80,turn:global.relay.metered.ca:80?transport=tcp,turn:global.relay.metered.ca:443,turns:global.relay.metered.ca:443?transport=tcp
+TURN_USERNAME=your-new-turn-username
+TURN_CREDENTIAL=your-new-turn-credential
 ```
 
 Use provider-issued credentials, preferably short-lived. Never commit TURN credentials to GitHub. TURN relay usage may cost money. Test on actual mobile networks and browsers; do not assume every network supports direct peer-to-peer connections.
@@ -209,3 +210,12 @@ The JSONB document adapter preserves the existing model API while moving storage
 
 ## Persistent media storage
 See [PERSISTENT_MEDIA_SETUP.md](PERSISTENT_MEDIA_SETUP.md) to configure Cloudinary for persistent profile photos, post media, stories, group attachments and advert media. Verify `/api/health` reports `mediaStorage: cloudinary` after redeployment. Voice-message files remain on local storage in this version and need a separate private object-storage migration.
+
+
+## Music, comment replies and wallet payouts
+- The Music section accepts creator-uploaded audio tracks (30 MB default limit). Set `MAX_SONG_MB` to adjust the limit. Audio is stored using the configured media storage (Cloudinary when configured; local temporary storage otherwise).
+- Post comments now have an independently scrollable thread and threaded replies.
+- Approved gift transfers add to both spendable wallet credits and the separate withdrawable gift-earnings balance. Wallet purchases consume gift earnings first, then other credits, so spent gift earnings cannot be withdrawn later. Top-up credits never increase the withdrawable balance.
+- Withdrawal requests collect bank name, account name and a 10-digit account number. The admin must review each request. Approval records the admin decision; the actual bank transfer must be made by the company separately before clicking Approve.
+- Admins configure the company bank name, account name and account number under Admin → Payment methods. Those details appear in the wallet top-up dialog. Bank-transfer top-ups remain pending until manually verified and approved.
+- To ensure the configured admin account has the admin role, set `ADMIN_EMAIL` to the exact login email in Render. On startup, that exact account is promoted to admin. Existing account passwords are not changed by this role promotion.

@@ -25,3 +25,14 @@
 - Added `/api/health` media-storage status and `PERSISTENT_MEDIA_SETUP.md`.
 - Voice messages remain on local disk; this patch does not claim they are persistent.
 - Requires a configured Cloudinary account and a live Render upload/restart test; those cannot be completed in this local build environment.
+
+
+## Additional feature update
+- Added a dedicated Music library with audio upload, playback, uploader attribution and owner/admin removal.
+- Added scrollable comments and threaded replies.
+- Reduced unnecessary hover motion and layout shifting; added stable scroll gutters and reduced-motion support.
+- Admin dashboard now loads independent data requests with partial-failure messaging instead of failing the entire page when one panel endpoint errors.
+- Configured `ADMIN_EMAIL` now promotes the exact existing account to admin on startup if necessary.
+- Added separate withdrawable gift earnings. Gift transfers add to withdrawable earnings; purchased top-ups do not. Gift earnings are consumed before top-up credits during in-app gift purchases.
+- Added admin-reviewed withdrawal requests and configurable company bank transfer details.
+- Static JavaScript syntax checks pass. Live database, Cloudinary audio upload, bank payout and Render deployment tests have not been run in this environment.

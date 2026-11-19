@@ -27,10 +27,10 @@ const id = () => require('crypto').randomUUID().replace(/-/g, '');
 const now = () => new Date().toISOString();
 const clone = v => v === undefined ? undefined : JSON.parse(JSON.stringify(v));
 const refs = {
-  users: { author:'users', sender:'users', recipient:'users', user:'users', actor:'users', reporter:'users', admin:'users', reviewedBy:'users', followers:'users', following:'users', blockedUsers:'users', 'comments.author':'users' },
+  users: { author:'users', sender:'users', recipient:'users', user:'users', actor:'users', reporter:'users', admin:'users', reviewedBy:'users', followers:'users', following:'users', blockedUsers:'users', 'comments.author':'users','comments.replies.author':'users' },
   giftItems: { gift:'gifts', owner:'users' },
   giftTransfers: { sender:'users', recipient:'users', giftItem:'giftItems', reviewedBy:'users' },
-  posts: { author:'users', 'comments.author':'users' },
+  posts: { author:'users', 'comments.author':'users','comments.replies.author':'users' },
   messages: { sender:'users', recipient:'users' },
   friendRequests: { sender:'users', recipient:'users' },
   groupMessages: { sender:'users', group:'groups' },
@@ -40,13 +40,13 @@ const refs = {
   topups: { user:'users', reviewedBy:'users' },
   ledgers: { user:'users', actor:'users' },
   reports: { reporter:'users' },
-  audits: { admin:'users' }, adverts: { advertiser:'users', reviewedBy:'users' }
+  audits: { admin:'users' }, adverts: { advertiser:'users', reviewedBy:'users' }, songs: { uploader:'users' }, withdrawals: { user:'users', reviewedBy:'users' }
 };
 const defaults = {
- users:{displayName:'',bio:'',avatar:'',role:'user',premium:'free',premiumUntil:null,walletBalance:0,followers:[],following:[],blockedUsers:[],isSuspended:false,lastSeen:now()},
+ users:{displayName:'',bio:'',avatar:'',role:'user',premium:'free',premiumUntil:null,walletBalance:0,withdrawableBalance:0,followers:[],following:[],blockedUsers:[],isSuspended:false,lastSeen:now()},
  posts:{text:'',mediaUrl:'',likes:[],comments:[],isRemoved:false}, messages:{readAt:null}, groupMessages:{text:'',mediaUrl:'',mediaType:'',audioUrl:'',audioDuration:0}, groups:{description:'',avatar:'',members:[],admins:[],lastMessageAt:null}, notifications:{readAt:null,link:''},
  gifts:{description:'',emoji:'🎁',active:true}, giftItems:{status:'available',acquiredFrom:'purchase'}, topups:{proofUrl:'',status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null},
- giftTransfers:{status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null}, ledgers:{}, reports:{status:'open'}, stories:{text:'',mediaUrl:'',viewers:[]}, settings:{}, adverts:{status:'pending',paymentStatus:'pending',impressions:0,clicks:0,adminNote:'',mediaUrl:'',placement:'feed'}, audits:{targetType:'',targetId:'',details:''}
+ giftTransfers:{status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null}, ledgers:{}, reports:{status:'open'}, stories:{text:'',mediaUrl:'',viewers:[]}, settings:{}, adverts:{status:'pending',paymentStatus:'pending',impressions:0,clicks:0,adminNote:'',mediaUrl:'',placement:'feed'}, songs:{status:'published',artist:'',genre:'Other'}, withdrawals:{status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null}, audits:{targetType:'',targetId:'',details:''}
 };
 function getPath(obj, key) { const parts=key.split('.'); const walk=(value,i)=>{ if(value==null)return undefined; if(i===parts.length)return value; if(Array.isArray(value))return value.map(v=>walk(v,i)).flat(); return walk(value[parts[i]],i+1); }; return walk(obj,0); }
 function setPath(obj,key,value){const parts=key.split('.');const walk=(target,i)=>{if(i===parts.length-1){target[parts[i]]=value;return;}if(Array.isArray(target)){target.forEach(x=>walk(x,i));return;}if(!target[parts[i]])return;walk(target[parts[i]],i+1);};walk(obj,0);}
@@ -148,7 +148,7 @@ class Model {
  async findByIdAndUpdate(id,update,options={}){const d=this._get(id);if(!d)return null;Object.assign(d,update.$set||update);this._save(d);return attachArrayMethods(new Doc(this,d));}
 }
 const modelsByCollection={};
-const defs={User:'users',Post:'posts',Message:'messages',FriendRequest:'friendRequests',Group:'groups',GroupMessage:'groupMessages',Notification:'notifications',Gift:'gifts',GiftItem:'giftItems',Topup:'topups',GiftTransfer:'giftTransfers',Ledger:'ledgers',Report:'reports',Story:'stories',Setting:'settings',Audit:'audits',Advert:'adverts'};
+const defs={User:'users',Post:'posts',Message:'messages',FriendRequest:'friendRequests',Group:'groups',GroupMessage:'groupMessages',Notification:'notifications',Gift:'gifts',GiftItem:'giftItems',Topup:'topups',GiftTransfer:'giftTransfers',Ledger:'ledgers',Report:'reports',Story:'stories',Setting:'settings',Audit:'audits',Advert:'adverts',Song:'songs',Withdrawal:'withdrawals'};
 
 function atomicPurchaseGift(userId, giftId, quantity) {
  return db.transaction(() => {
@@ -157,7 +157,7 @@ function atomicPurchaseGift(userId, giftId, quantity) {
   const total=Number(gift.value)*quantity;
   if(!Number.isSafeInteger(total) || total<1) return {error:'Invalid gift quantity.'};
   if(Number(user.walletBalance||0)<total) return {error:'Insufficient CHATHSI credits. Top up your wallet first.'};
-  user.walletBalance=Number(user.walletBalance||0)-total; user.updatedAt=now(); modelsByCollection.users._save(user);
+  user.walletBalance=Number(user.walletBalance||0)-total; user.withdrawableBalance=Math.max(0,Number(user.withdrawableBalance||0)-total); user.updatedAt=now(); modelsByCollection.users._save(user);
   const items=[]; for(let i=0;i<quantity;i++) items.push(modelsByCollection.giftItems._create({owner:user._id,gift:gift._id,originalValue:gift.value,acquiredFrom:'purchase'}));
   modelsByCollection.ledgers._create({user:user._id,type:'gift_purchase',amount:-total,balanceAfter:user.walletBalance,reference:`GIFTBUY_${id()}`,description:`Purchased ${quantity} × ${gift.name}`});
   return {user,items};
@@ -197,7 +197,7 @@ function atomicReviewGiftTransfer(transferId, adminId, status, note) {
   if(status==='approved') {
    recipient=modelsByCollection.users._get(transfer.recipient);if(!recipient)return {error:'Recipient no longer exists.'};
    item.status='transferred';item.updatedAt=now();modelsByCollection.giftItems._save(item);
-   recipient.walletBalance=Number(recipient.walletBalance||0)+Number(transfer.value);recipient.updatedAt=now();modelsByCollection.users._save(recipient);
+   recipient.walletBalance=Number(recipient.walletBalance||0)+Number(transfer.value);recipient.withdrawableBalance=Number(recipient.withdrawableBalance||0)+Number(transfer.value);recipient.updatedAt=now();modelsByCollection.users._save(recipient);
    modelsByCollection.ledgers._create({user:recipient._id,type:'gift_received',amount:transfer.value,balanceAfter:recipient.walletBalance,reference:`TRANSFER_${transfer._id}`,description:'Gift transfer value credited (100%)',actor:adminId});
   } else { item.status='available';item.updatedAt=now();modelsByCollection.giftItems._save(item); }
   transfer.status=status;transfer.adminNote=String(note||'').slice(0,500);transfer.reviewedBy=adminId;transfer.reviewedAt=now();transfer.updatedAt=now();modelsByCollection.giftTransfers._save(transfer);
@@ -205,12 +205,34 @@ function atomicReviewGiftTransfer(transferId, adminId, status, note) {
  })();
 }
 
+function atomicCreateWithdrawal(userId, amount, bank) {
+ return db.transaction(() => {
+  const user=modelsByCollection.users._get(userId);
+  if(!user || Number(user.withdrawableBalance||0)<amount || Number(user.walletBalance||0)<amount) return {error:'Insufficient withdrawable gift earnings.'};
+  user.withdrawableBalance=Number(user.withdrawableBalance||0)-amount; user.walletBalance=Number(user.walletBalance||0)-amount; user.updatedAt=now(); modelsByCollection.users._save(user);
+  const withdrawal=modelsByCollection.withdrawals._create({user:userId,amount,...bank,reference:`WD_${id()}`,status:'pending'});
+  modelsByCollection.ledgers._create({user:userId,type:'withdrawal_pending',amount:-amount,balanceAfter:user.walletBalance,reference:withdrawal.reference,description:'Withdrawal request pending admin approval'});
+  return {withdrawal};
+ })();
+}
+function atomicReviewWithdrawal(withdrawalId, adminId, status, note) {
+ return db.transaction(() => {
+  const withdrawal=modelsByCollection.withdrawals._get(withdrawalId);
+  if(!withdrawal || withdrawal.status!=='pending') return {error:'Withdrawal is not pending.'};
+  const user=modelsByCollection.users._get(withdrawal.user); if(!user)return {error:'Withdrawal user no longer exists.'};
+  if(status==='rejected') { user.withdrawableBalance=Number(user.withdrawableBalance||0)+Number(withdrawal.amount); user.walletBalance=Number(user.walletBalance||0)+Number(withdrawal.amount); user.updatedAt=now(); modelsByCollection.users._save(user); modelsByCollection.ledgers._create({user:user._id,type:'withdrawal_refund',amount:withdrawal.amount,balanceAfter:user.walletBalance,reference:`REFUND_${withdrawal.reference}`,description:'Rejected withdrawal returned to withdrawable balance',actor:adminId}); }
+  withdrawal.status=status; withdrawal.adminNote=String(note||'').slice(0,500); withdrawal.reviewedBy=adminId; withdrawal.reviewedAt=now(); withdrawal.updatedAt=now(); modelsByCollection.withdrawals._save(withdrawal);
+  return {withdrawal,user:user._id};
+ })();
+}
 const exported={};for(const [name,col] of Object.entries(defs)){const m=new Model(name,col);modelsByCollection[col]=m;exported[name]=m;}
 exported.db=db;
 exported.atomicPurchaseGift=atomicPurchaseGift;
 exported.atomicCreateGiftTransfer=atomicCreateGiftTransfer;
 exported.atomicReviewTopup=atomicReviewTopup;
 exported.atomicReviewGiftTransfer=atomicReviewGiftTransfer;
+exported.atomicCreateWithdrawal=atomicCreateWithdrawal;
+exported.atomicReviewWithdrawal=atomicReviewWithdrawal;
 exported.exportSnapshot=async()=>({format:'chathis-jsonb-snapshot-v1',exportedAt:now(),documents:db.prepare('SELECT collection,id,data,created_at,updated_at FROM documents ORDER BY collection,id').all().map(r=>({collection:r.collection,id:r.id,data:JSON.parse(r.data),created_at:r.created_at,updated_at:r.updated_at}))});
 exported.close=()=>db.close();
 module.exports=exported;

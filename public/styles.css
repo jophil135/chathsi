@@ -100,3 +100,28 @@ body[data-theme="dark"] .story-chip,body[data-theme="midnight"] .story-chip{colo
 button,.card,.bubble,.story-chip,.premium-plan{transition:background-color .2s ease,border-color .2s ease,box-shadow .2s ease,transform .2s ease}
 @media(max-width:760px){.main{min-width:0}.chat-layout,.chat-window{min-width:0}.chat-messages{max-height:52vh;height: min(52vh,430px)}.comment-thread,.comments,.comments-list,.post-comments{max-height:34vh}.chat-send{gap:6px}.chat-send input{flex:1 1 100%}.chat-send button,.chat-send label{flex:1 1 auto}.premium-plan{padding:15px}.story-view-media{max-height:58vh}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+
+
+/* CHATHIS music, wallet and interaction stability update */
+html{scroll-behavior:smooth;scrollbar-gutter:stable}
+body{overflow-x:hidden;overscroll-behavior-y:contain}
+.main,.page,#page{min-width:0;contain:layout style}
+.card,.nav-item,.btn,.subtle-btn{transition:background-color .16s ease,border-color .16s ease,box-shadow .16s ease}
+.card:hover{transform:none}
+button:hover{transform:none}
+.comments{display:flex;flex-direction:column;max-height:360px;min-height:0;overflow:hidden}
+.comments-list{max-height:280px;overflow-y:auto;overscroll-behavior:contain;scrollbar-gutter:stable;padding:4px 6px 8px 0}
+.comment-item{padding:8px 0;border-bottom:1px solid var(--line);font-size:13px;line-height:1.45;overflow-wrap:anywhere}
+.comment-reply{margin:7px 0 4px 16px;padding-left:10px;border-left:2px solid var(--line);font-size:12px}
+.reply-row{display:flex;gap:6px;align-items:center;margin:6px 0 0 16px}
+.reply-row input{min-width:0;flex:1;padding:7px 9px;font-size:12px}
+.comment-row{display:flex;gap:8px;padding-top:10px;background:var(--surface);position:sticky;bottom:0}
+.comment-row input{min-width:0;flex:1}
+.music-list{display:grid;gap:12px;margin-top:16px}
+.song-card{display:grid;grid-template-columns:minmax(0,1fr) minmax(180px,360px) auto;align-items:center;gap:14px}
+.song-card audio{width:100%;min-width:0}
+.bank-details{padding:14px;border:1px solid var(--line);border-radius:12px;background:var(--pale);margin:12px 0}
+.bank-details p{margin:6px 0;overflow-wrap:anywhere}
+.admin-warning{border:1px solid #d99a36;background:#fff7e8;color:#684400}
+@media(max-width:700px){.song-card{grid-template-columns:1fr}.song-card audio{width:100%}.comments{max-height:320px}.comments-list{max-height:235px}.reply-row{margin-left:8px}}
+@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}button:hover{transform:none}}
