@@ -17,3 +17,11 @@
 - Profile images: 12 MB (`MAX_IMAGE_MB`)
 - Post/story/ad media: 50 MB (`MAX_MEDIA_MB`)
 - Voice messages: 12 MB (`MAX_VOICE_MB`)
+
+
+## Persistent media patch
+- Added Cloudinary-backed Multer storage for image/video uploads when credentials are configured.
+- Updated profile, post, story, group attachment and advert records to save the Cloudinary HTTPS URL.
+- Added `/api/health` media-storage status and `PERSISTENT_MEDIA_SETUP.md`.
+- Voice messages remain on local disk; this patch does not claim they are persistent.
+- Requires a configured Cloudinary account and a live Render upload/restart test; those cannot be completed in this local build environment.

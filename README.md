@@ -205,3 +205,7 @@ To import the snapshot into a new CockroachDB database, on a trusted computer:
 - `npm run db:import -- path/to/chathis-database-export.json` imports an admin-exported snapshot. Existing document IDs are not overwritten.
 
 The JSONB document adapter preserves the existing model API while moving storage to CockroachDB. It currently filters model queries in application memory, so this is a compatibility migration rather than a final high-scale relational schema. Add collection-specific SQL indexes and query methods as usage grows.
+
+
+## Persistent media storage
+See [PERSISTENT_MEDIA_SETUP.md](PERSISTENT_MEDIA_SETUP.md) to configure Cloudinary for persistent profile photos, post media, stories, group attachments and advert media. Verify `/api/health` reports `mediaStorage: cloudinary` after redeployment. Voice-message files remain on local storage in this version and need a separate private object-storage migration.

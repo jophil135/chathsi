@@ -9,6 +9,7 @@ const cookieParser = require('cookie-parser');
 const helmet = require('helmet');
 const morgan = require('morgan');
 const multer = require('multer');
+const { v2: cloudinary } = require('cloudinary');
 const rateLimit = require('express-rate-limit');
 const { Server } = require('socket.io');
 const M = require('./models');
@@ -26,6 +27,11 @@ const uploadDir = path.resolve(process.env.UPLOAD_DIR || 'uploads');
 const voiceDir = path.resolve(process.env.VOICE_DIR || path.join(uploadDir, '..', 'voice-private'));
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(voiceDir, { recursive: true });
+const cloudMediaEnabled = Boolean(process.env.CLOUDINARY_URL || (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET));
+if (cloudMediaEnabled && !process.env.CLOUDINARY_URL) {
+  cloudinary.config({ cloud_name: process.env.CLOUDINARY_CLOUD_NAME, api_key: process.env.CLOUDINARY_API_KEY, api_secret: process.env.CLOUDINARY_API_SECRET, secure: true });
+}
+if (!cloudMediaEnabled) console.warn('Persistent media storage is NOT configured. Uploaded images/videos will use local disk and may disappear on Render restarts. Configure Cloudinary before production uploads.');
 
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(morgan('tiny'));
@@ -36,12 +42,31 @@ app.use('/uploads', express.static(uploadDir, { maxAge: '1d' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
 app.use('/api', rateLimit({ windowMs: 60 * 1000, limit: 180, standardHeaders: true, legacyHeaders: false }));
 
-const storage = multer.diskStorage({
+const localStorage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, uploadDir),
   filename: (_req, file, cb) => cb(null, `${Date.now()}-${Math.random().toString(36).slice(2, 10)}${path.extname(file.originalname).toLowerCase()}`)
 });
+// Multer storage engine: stream uploads directly to Cloudinary so Render's
+// ephemeral filesystem is never the source of truth for public media.
+const cloudStorage = {
+  _handleFile(_req, file, cb) {
+    const folder = process.env.CLOUDINARY_MEDIA_FOLDER || 'chathis';
+    const resourceType = file.mimetype.startsWith('video/') ? 'video' : 'image';
+    const stream = cloudinary.uploader.upload_stream({ folder, resource_type: resourceType, use_filename: false, unique_filename: true }, (error, result) => {
+      if (error) return cb(error);
+      cb(null, { path: result.secure_url, filename: result.public_id, public_id: result.public_id, cloudinaryResourceType: resourceType, size: result.bytes, format: result.format });
+    });
+    file.stream.on('error', cb);
+    file.stream.pipe(stream);
+  },
+  _removeFile(_req, file, cb) {
+    if (!file.public_id) return cb(null);
+    cloudinary.uploader.destroy(file.public_id, { resource_type: file.cloudinaryResourceType || 'image' }).then(() => cb(null), cb);
+  }
+};
+const mediaStorage = cloudMediaEnabled ? cloudStorage : localStorage;
 const imageUpload = multer({
-  storage,
+  storage: mediaStorage,
   limits: { fileSize: (Number(process.env.MAX_IMAGE_MB) || 12) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (!/^image\/(jpeg|png|gif|webp)$/.test(file.mimetype)) return cb(new Error('Choose a JPG, PNG, GIF or WEBP image.'));
@@ -49,7 +74,7 @@ const imageUpload = multer({
   }
 });
 const mediaUpload = multer({
-  storage,
+  storage: mediaStorage,
   limits: { fileSize: (Number(process.env.MAX_MEDIA_MB) || 50) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const imageOk = /^image\/(jpeg|png|gif|webp)$/.test(file.mimetype);
@@ -146,7 +171,7 @@ async function seed() {
     await M.Gift.updateOne({ name }, { $setOnInsert: { name, description, emoji, value, active: true } }, { upsert: true });
 }
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'CHATHIS API' }));
+app.get('/api/health', (_req, res) => res.json({ ok: true, service: 'CHATHIS API', mediaStorage: cloudMediaEnabled ? 'cloudinary' : 'local-temporary' }));
 app.get('/api/voice/:filename', auth, async (req, res) => {
   const filename = path.basename(req.params.filename);
   const audioUrl = `/api/voice/${filename}`;
@@ -193,7 +218,7 @@ app.patch('/api/me', auth, imageUpload.single('avatar'), async (req, res) => {
   const { displayName, bio } = req.body;
   if (displayName !== undefined) req.user.displayName = String(displayName).slice(0, 50);
   if (bio !== undefined) req.user.bio = String(bio).slice(0, 180);
-  if (req.file) req.user.avatar = `/uploads/${req.file.filename}`;
+  if (req.file) req.user.avatar = req.file.path.startsWith('http') ? req.file.path : `/uploads/${req.file.filename}`;
   await req.user.save();
   const updatedUser = safeUser(req.user);
   // Broadcast only public profile fields; never expose email, wallet balance or account controls.
@@ -282,7 +307,7 @@ app.get('/api/posts', auth, async (req, res) => {
 });
 app.post('/api/posts', auth, mediaUpload.single('media'), async (req, res) => {
   const text = String(req.body.text || '').trim();
-  const mediaUrl = req.file ? `/uploads/${req.file.filename}` : '';
+  const mediaUrl = req.file ? (req.file.path.startsWith('http') ? req.file.path : `/uploads/${req.file.filename}`) : '';
   const mediaType = req.file ? (req.file.mimetype.startsWith('video/') ? 'video' : 'image') : '';
   const allowedMediaFilters = ['none','vivid','warm','cool','mono','vintage'];
   const mediaFilter = allowedMediaFilters.includes(req.body.mediaFilter) ? req.body.mediaFilter : 'none';
@@ -329,7 +354,7 @@ app.get('/api/stories', auth, async (_req, res) => {
 });
 app.post('/api/stories', auth, mediaUpload.single('media'), async (req, res) => {
   const text = String(req.body.text || '').trim().slice(0, 500);
-  const mediaUrl = req.file ? `/uploads/${req.file.filename}` : '';
+  const mediaUrl = req.file ? (req.file.path.startsWith('http') ? req.file.path : `/uploads/${req.file.filename}`) : '';
   const mediaType = req.file ? (req.file.mimetype.startsWith('video/') ? 'video' : 'image') : '';
   const allowedMediaFilters = ['none','vivid','warm','cool','mono','vintage'];
   const mediaFilter = allowedMediaFilters.includes(req.body.mediaFilter) ? req.body.mediaFilter : 'none';
@@ -448,7 +473,7 @@ app.post('/api/groups/:groupId/messages', auth, mediaUpload.single('media'), asy
   if (!isGroupMember(group, req.user._id)) return res.status(403).json({ error: 'You are not a member of this group.' });
   const sticker = stickerCatalog.find(x => x.id === String(req.body.stickerId || ''));
   const text = sticker ? sticker.emoji : String(req.body.text || '').trim().slice(0,4000);
-  const mediaUrl = req.file ? `/uploads/${req.file.filename}` : '';
+  const mediaUrl = req.file ? (req.file.path.startsWith('http') ? req.file.path : `/uploads/${req.file.filename}`) : '';
   const mediaType = req.file ? (req.file.mimetype.startsWith('video/') ? 'video' : 'image') : '';
   if (!text && !mediaUrl) return res.status(400).json({ error: 'Write a message or attach a photo/video.' });
   const message = await M.GroupMessage.create({ group: group._id, sender: req.user._id, text, mediaUrl, mediaType, messageType: sticker ? 'sticker' : 'text', stickerId: sticker?.id || '' });
@@ -584,7 +609,7 @@ app.post('/api/advertiser/campaigns', auth, mediaUpload.single('media'), async (
   const businessName=String(req.body.businessName||'').trim().slice(0,80), headline=String(req.body.headline||'').trim().slice(0,100), body=String(req.body.body||'').trim().slice(0,500), destinationUrl=safeAdUrl(req.body.destinationUrl);
   const budget=Number(req.body.budget), startsAt=new Date(req.body.startsAt), endsAt=new Date(req.body.endsAt);
   if(!businessName||!headline||!body||!destinationUrl||!Number.isFinite(budget)||budget<1000||!Number.isFinite(startsAt.getTime())||!Number.isFinite(endsAt.getTime())||endsAt<=startsAt||endsAt<=new Date())return res.status(400).json({error:'Complete all fields. Use an HTTPS destination, budget of at least ₦1,000, and valid future campaign dates.'});
-  const ad=await M.Advert.create({advertiser:req.user._id,businessName,headline,body,destinationUrl,budget,spent:0,startsAt:startsAt.toISOString(),endsAt:endsAt.toISOString(),mediaUrl:req.file?`/uploads/${req.file.filename}`:'',placement:['feed','discover','communities'].includes(req.body.placement)?req.body.placement:'feed',status:'pending',paymentStatus:'pending'});
+  const ad=await M.Advert.create({advertiser:req.user._id,businessName,headline,body,destinationUrl,budget,spent:0,startsAt:startsAt.toISOString(),endsAt:endsAt.toISOString(),mediaUrl:req.file?(req.file.path.startsWith('http')?req.file.path:`/uploads/${req.file.filename}`):'',placement:['feed','discover','communities'].includes(req.body.placement)?req.body.placement:'feed',status:'pending',paymentStatus:'pending'});
   await M.Audit.create({admin:req.user._id,targetType:'advert',targetId:ad._id,details:'Advertiser submitted campaign for review.'});
   res.status(201).json({campaign:ad,message:'Campaign submitted. It will not run until an admin approves the advert and payment.'});
 });
