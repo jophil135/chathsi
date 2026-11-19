@@ -125,3 +125,29 @@ button:hover{transform:none}
 .admin-warning{border:1px solid #d99a36;background:#fff7e8;color:#684400}
 @media(max-width:700px){.song-card{grid-template-columns:1fr}.song-card audio{width:100%}.comments{max-height:320px}.comments-list{max-height:235px}.reply-row{margin-left:8px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}button:hover{transform:none}}
+
+/* Persistent navigation: keep desktop sidebar and top search/navigation visible while scrolling. */
+.sidebar{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;overscroll-behavior:contain}
+.topbar{position:sticky;top:0;z-index:15;background:var(--bg);}
+.mobile-nav{position:fixed;bottom:0;left:0;right:0;z-index:30}
+@media(max-width:760px){.topbar{position:sticky;top:0;z-index:20;background:var(--bg)}}
+
+/* CHATHIS stability patch: reduce visual jitter and unexpected layout movement. */
+html{scroll-behavior:auto!important;scrollbar-gutter:stable both-edges}
+body{overflow-x:clip;overscroll-behavior-y:auto}
+.app{align-items:start;min-height:100dvh}
+.main{align-self:start;contain:none!important}
+.page,#page{contain:none!important;content-visibility:visible}
+.sidebar{position:sticky;top:0;align-self:start;height:100dvh;max-height:100dvh;overflow-y:auto;overscroll-behavior:contain}
+.topbar{position:sticky;top:0;z-index:25;min-height:83px;background:var(--bg);backdrop-filter:none;transform:none!important}
+.card,.nav-item,.btn,.subtle-btn,button,.story-chip,.premium-plan{transform:none!important;transition:background-color .12s ease,border-color .12s ease,color .12s ease,box-shadow .12s ease!important}
+button:hover,.btn:hover,.nav-item:hover,.story-chip:hover,.sticker-choice:hover{transform:none!important}
+img,video{max-width:100%;height:auto}
+.post-media{display:block;width:100%;height:auto;max-height:470px;aspect-ratio:16/9;object-fit:cover;background:#edf2f8}
+.avatar img,.story-ring img{width:100%;height:100%;object-fit:cover}
+.feed-posts,.music-list,.admin-grid,.grid-2{min-width:0}
+.comments,.comments-list,.comment-thread,.chat-messages{overscroll-behavior:contain;overflow-anchor:none}
+.comments-list{overflow-y:auto;overflow-x:hidden}
+.mobile-nav{padding-bottom:max(env(safe-area-inset-bottom),0px);min-height:63px}
+@media(max-width:760px){.topbar{min-height:65px;height:65px}.main{padding-bottom:calc(78px + env(safe-area-inset-bottom))}.page{margin-top:18px}.mobile-nav{height:calc(63px + env(safe-area-inset-bottom));padding-bottom:env(safe-area-inset-bottom)}.post-media{aspect-ratio:4/3}.card{overflow-wrap:anywhere}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;scroll-behavior:auto!important;transition:none!important}}

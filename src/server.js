@@ -91,7 +91,11 @@ const audioUpload = multer({
   storage: mediaStorage,
   limits: { fileSize: (Number(process.env.MAX_SONG_MB) || 30) * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    if (!/^audio\/(mpeg|mp3|wav|ogg|opus|aac|mp4|x-m4a|flac|webm)/.test(file.mimetype)) return cb(new Error('Upload an MP3, WAV, OGG, AAC, M4A, FLAC or WEBM audio file.'));
+    // Accept any audio MIME type plus common audio extensions for browsers or
+    // operating systems that report a generic application/octet-stream MIME.
+    const audioMime = /^audio\//i.test(String(file.mimetype || ''));
+    const audioExtension = /\.(mp3|wav|wave|ogg|oga|opus|aac|m4a|mp4|flac|webm|aiff|aif|ape|alac|amr|mid|midi|wma|caf|au|snd|dsf|dff)$/i.test(String(file.originalname || ''));
+    if (!audioMime && !audioExtension) return cb(new Error('Choose an audio file. Supported uploads include MP3, WAV, OGG, OPUS, AAC, M4A, FLAC, WEBM, AIFF, ALAC, AMR, MIDI and other audio formats.'));
     cb(null, true);
   }
 });
