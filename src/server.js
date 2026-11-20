@@ -223,7 +223,7 @@ app.get('/api/config', async (_req, res) => {
     turnUrls = [...new Set(turnUrls.map(url => String(url).trim()).filter(url => /^(turn|turns):/i.test(url)))];
     if (turnUrls.length) iceServers.push({ urls: turnUrls, username: turnUsername, credential: turnCredential });
   }
-  res.json({ paymentMethods: methods?.value || {}, premiumPlans: plans?.value || [], platform: platform?.value || {}, appearance: appearance?.value || { primary:'#2878f0', secondary:'#4c9bff', background:'#f5f8fc', surface:'#ffffff', text:'#15233b', mode:'light', decoration:'none', eventLabel:'' }, rtc: { iceServers } });
+  res.json({ paymentMethods: methods?.value || {}, premiumPlans: plans?.value || [], platform: platform?.value || {}, cameraFilters: cameraFilters?.value || [], appearance: appearance?.value || { primary:'#2878f0', secondary:'#4c9bff', background:'#f5f8fc', surface:'#ffffff', text:'#15233b', mode:'light', decoration:'none', eventLabel:'' }, rtc: { iceServers } });
 });
 
 // Authentication
@@ -406,6 +406,18 @@ app.get('/api/stories', auth, async (_req, res) => {
   const stories = await M.Story.find({ expiresAt: { $gt: new Date() } }).sort({ createdAt: -1 }).populate('author', 'username avatar');
   res.json({ stories });
 });
+app.post('/api/stories/:id/like', auth, async (req, res) => {
+  const story = await M.Story.findById(req.params.id);
+  if (!story || new Date(story.expiresAt || 0) <= new Date()) return res.status(404).json({ error: 'Story not found or expired.' });
+  if (!Array.isArray(story.likes)) story.likes = [];
+  const liked = story.likes.some(id => String(id?._id || id) === String(req.user._id));
+  if (liked) story.likes = story.likes.filter(id => String(id?._id || id) !== String(req.user._id));
+  else { story.likes.push(req.user._id); if (String(story.author) !== String(req.user._id)) await notify(story.author, req.user._id, 'story_like', `${req.user.username} liked your story.`); }
+  await story.save();
+  io.except(`user:${req.user._id}`).emit('story:liked', { storyId: String(story._id), likes: story.likes.length });
+  res.json({ liked: !liked, likes: story.likes.length });
+});
+
 app.post('/api/stories', auth, mediaUpload.single('media'), async (req, res) => {
   const text = String(req.body.text || '').trim().slice(0, 500);
   const mediaUrl = req.file ? (req.file.path.startsWith('http') ? req.file.path : `/uploads/${req.file.filename}`) : '';
@@ -814,6 +826,21 @@ app.patch('/api/admin/platform', auth, admin, async (req, res) => {
   await audit(req.user._id, 'platform_name_updated', 'setting', 'platform', name);
   res.json({ platform: next });
 });
+app.patch('/api/admin/camera-filters', auth, admin, async (req, res) => {
+  const filters = Array.isArray(req.body.filters) ? req.body.filters.slice(0, 20) : [];
+  const clean = [];
+  for (const item of filters) {
+    const name = String(item?.name || '').trim().replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 24);
+    const id = String(item?.id || name.toLowerCase().replace(/\s+/g, '-')).replace(/[^a-z0-9_-]/g, '').slice(0, 28);
+    const css = String(item?.css || '').trim().slice(0, 180);
+    if (!name || !id || !/^(none|grayscale\(100%\)|sepia\(\d{1,3}%\)|contrast\(\d{1,3}%\)|saturate\(\d{1,3}%\)|brightness\(\d{1,3}%\)|hue-rotate\(-?\d{1,3}deg\))(\s+(grayscale\(100%\)|sepia\(\d{1,3}%\)|contrast\(\d{1,3}%\)|saturate\(\d{1,3}%\)|brightness\(\d{1,3}%\)|hue-rotate\(-?\d{1,3}deg\)))*$/.test(css)) return res.status(400).json({ error: 'Filter code must use supported CSS filter functions only. JavaScript is not accepted.' });
+    clean.push({ id, name, css });
+  }
+  await M.Setting.updateOne({ key: 'cameraFilters' }, { $set: { value: clean } }, { upsert: true });
+  await audit(req.user._id, 'camera_filters_updated', 'setting', 'cameraFilters', `${clean.length} filters`);
+  res.json({ filters: clean });
+});
+
 app.patch('/api/admin/appearance', auth, admin, async (req, res) => {
   const hex = value => /^#[0-9a-fA-F]{6}$/.test(String(value || '')) ? String(value) : null;
   const modes = ['light', 'dark', 'midnight', 'rose'];

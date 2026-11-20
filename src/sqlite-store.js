@@ -36,7 +36,7 @@ const refs = {
   groupMessages: { sender:'users', group:'groups' },
   groups: { owner:'users', members:'users', admins:'users' },
   notifications: { user:'users', actor:'users' },
-  stories: { author:'users', viewers:'users' },
+  stories: { author:'users', viewers:'users', likes:'users' },
   topups: { user:'users', reviewedBy:'users' },
   ledgers: { user:'users', actor:'users' },
   reports: { reporter:'users' },
@@ -46,7 +46,7 @@ const defaults = {
  users:{displayName:'',bio:'',avatar:'',role:'user',premium:'free',premiumUntil:null,walletBalance:0,withdrawableBalance:0,followers:[],following:[],blockedUsers:[],isSuspended:false,lastSeen:now()},
  posts:{text:'',mediaUrl:'',likes:[],comments:[],isRemoved:false}, messages:{readAt:null}, groupMessages:{text:'',mediaUrl:'',mediaType:'',audioUrl:'',audioDuration:0}, groups:{description:'',avatar:'',members:[],admins:[],lastMessageAt:null}, notifications:{readAt:null,link:''},
  gifts:{description:'',emoji:'🎁',active:true}, giftItems:{status:'available',acquiredFrom:'purchase'}, topups:{proofUrl:'',status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null},
- giftTransfers:{status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null}, ledgers:{}, reports:{status:'open'}, stories:{text:'',mediaUrl:'',viewers:[]}, settings:{}, adverts:{status:'pending',paymentStatus:'pending',impressions:0,clicks:0,adminNote:'',mediaUrl:'',placement:'feed'}, songs:{status:'published',artist:'',genre:'Other'}, withdrawals:{status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null}, audits:{targetType:'',targetId:'',details:''}
+ giftTransfers:{status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null}, ledgers:{}, reports:{status:'open'}, stories:{text:'',mediaUrl:'',viewers:[],likes:[]}, settings:{}, adverts:{status:'pending',paymentStatus:'pending',impressions:0,clicks:0,adminNote:'',mediaUrl:'',placement:'feed'}, songs:{status:'published',artist:'',genre:'Other'}, withdrawals:{status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null}, audits:{targetType:'',targetId:'',details:''}
 };
 function getPath(obj, key) { const parts=key.split('.'); const walk=(value,i)=>{ if(value==null)return undefined; if(i===parts.length)return value; if(Array.isArray(value))return value.map(v=>walk(v,i)).flat(); return walk(value[parts[i]],i+1); }; return walk(obj,0); }
 function setPath(obj,key,value){const parts=key.split('.');const walk=(target,i)=>{if(i===parts.length-1){target[parts[i]]=value;return;}if(Array.isArray(target)){target.forEach(x=>walk(x,i));return;}if(!target[parts[i]])return;walk(target[parts[i]],i+1);};walk(obj,0);}

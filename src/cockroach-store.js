@@ -19,7 +19,7 @@ const refs = {
  giftItems:{gift:'gifts',owner:'users'}, giftTransfers:{sender:'users',recipient:'users',giftItem:'giftItems',reviewedBy:'users'},
  posts:{author:'users','comments.author':'users','comments.replies.author':'users'}, messages:{sender:'users',recipient:'users'}, friendRequests:{sender:'users',recipient:'users'},
  groupMessages:{sender:'users',group:'groups'}, groups:{owner:'users',members:'users',admins:'users'}, notifications:{user:'users',actor:'users'},
- stories:{author:'users',viewers:'users'}, topups:{user:'users',reviewedBy:'users'}, ledgers:{user:'users',actor:'users'},
+ stories:{author:'users',viewers:'users',likes:'users'}, topups:{user:'users',reviewedBy:'users'}, ledgers:{user:'users',actor:'users'},
  reports:{reporter:'users'}, songs:{uploader:'users'}, withdrawals:{user:'users',reviewedBy:'users'}, audits:{admin:'users'}, adverts:{advertiser:'users',reviewedBy:'users'}
 };
 const defaults = {
@@ -27,7 +27,7 @@ const defaults = {
  posts:{text:'',mediaUrl:'',likes:[],comments:[],isRemoved:false},messages:{readAt:null},groupMessages:{text:'',mediaUrl:'',mediaType:'',audioUrl:'',audioDuration:0},
  groups:{description:'',avatar:'',members:[],admins:[],lastMessageAt:null},notifications:{readAt:null,link:''},gifts:{description:'',emoji:'🎁',active:true},
  giftItems:{status:'available',acquiredFrom:'purchase'},topups:{proofUrl:'',status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null},
- giftTransfers:{status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null},ledgers:{},reports:{status:'open'},stories:{text:'',mediaUrl:'',viewers:[]},settings:{},
+ giftTransfers:{status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null},ledgers:{},reports:{status:'open'},stories:{text:'',mediaUrl:'',viewers:[],likes:[]},settings:{},
  adverts:{status:'pending',paymentStatus:'pending',impressions:0,clicks:0,adminNote:'',mediaUrl:'',placement:'feed'},songs:{status:'published',artist:'',genre:'Other'},withdrawals:{status:'pending',adminNote:'',reviewedBy:null,reviewedAt:null},audits:{targetType:'',targetId:'',details:''}
 };
 function getPath(obj,key){const parts=key.split('.');let v=obj;for(const p of parts){if(v==null)return undefined;if(Array.isArray(v)){v=v.map(x=>x?.[p]);}else v=v[p];}return Array.isArray(v)?v.flat(Infinity):v;}
