@@ -202,6 +202,7 @@ app.get('/api/config', async (_req, res) => {
   const plans = await M.Setting.findOne({ key: 'premiumPlans' }).lean();
   const platform = await M.Setting.findOne({ key: 'platform' }).lean();
   const appearance = await M.Setting.findOne({ key: 'appearance' }).lean();
+  const cameraFilters = await M.Setting.findOne({ key: 'cameraFilters' }).lean();
   // WebRTC ICE configuration. TURN_URLS accepts either a JSON array or a
   // comma-separated list. TURN_URL remains supported for older deployments.
   const iceServers = [{ urls: process.env.STUN_URL || 'stun:stun.l.google.com:19302' }];
